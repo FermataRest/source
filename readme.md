@@ -7,15 +7,15 @@
 </p>
 
 <p align="center">
-  <b>Ocarina of Time for Nintendo Switch 2, running natively on your PC.</b><br>
-  <sub>No emulator: the game's code is recompiled into a real Windows program and its graphics redrawn on Vulkan.</sub>
+  <b>Your game, native on your PC.</b><br>
+  <sub>No emulator: Triforce builds a real Windows program on your PC, from your own copy of the game, and draws its graphics on Vulkan.</sub>
 </p>
 
 <p align="center">
   <a href="https://triforceproject.com"><img src="https://img.shields.io/badge/Download-Triforce%20Setup-D4A72C?style=for-the-badge&labelColor=111111" alt="Download Triforce Setup"></a>
   <img src="https://img.shields.io/badge/Windows-10%20%7C%2011-D4A72C?style=for-the-badge&labelColor=111111" alt="Windows 10 | 11">
   <img src="https://img.shields.io/badge/Renderer-Vulkan%201.3-1E62E8?style=for-the-badge&labelColor=111111" alt="Vulkan 1.3">
-  <img src="https://img.shields.io/badge/Recompiled-No%20emulator-2FAA3A?style=for-the-badge&labelColor=111111" alt="No emulator">
+  <img src="https://img.shields.io/badge/Native-No%20emulator-2FAA3A?style=for-the-badge&labelColor=111111" alt="No emulator">
   <img src="https://img.shields.io/badge/License-GPL--3.0%2B-C8202E?style=for-the-badge&labelColor=111111" alt="GPL-3.0+">
 </p>
 
@@ -35,20 +35,20 @@
 
 ## <img src="assets/readme/gold.svg" alt="" width="26"> The three pieces
 
-**Triforce** is a native PC version of the Switch 2 *Ocarina of Time*. Every piece has one job: to make Hyrule on your
-PC look and play exactly the way it does on the console.
+**Triforce** is a native PC version of your game. Every piece has one job: to make it look and play on your PC exactly
+the way it does on the console.
 
 | | Piece | What it does |
 |:-:|---|---|
 | <img src="assets/readme/ruby.svg" alt="" width="20"> | **Power** · the recompiler | Turns the game's own ARM64 code into a Windows program ahead of time. No emulation at runtime, no CPU guessing. |
 | <img src="assets/readme/sapphire.svg" alt="" width="20"> | **Wisdom** · the system | Plays the part of the console's operating system: files, saves, audio, controllers, threads and timing. |
-| <img src="assets/readme/emerald.svg" alt="" width="20"> | **Courage** · the renderer | Rebuilds the Switch 2 graphics on Vulkan, with the game's own lighting, fog, water and foliage. |
+| <img src="assets/readme/emerald.svg" alt="" width="20"> | **Courage** · the renderer | Rebuilds the console's graphics on Vulkan, with the game's own lighting, fog, water and foliage. |
 
-What makes Triforce's Hyrule look right:
+What makes the game look right in Triforce:
 
 - <img src="assets/readme/emerald.svg" alt="" width="16"> **Living forest:** trees with full canopies, ferns, grass,
   drifting leaves and fireflies, all drawn by the game's own GPU culling.
-- <img src="assets/readme/sapphire.svg" alt="" width="16"> **True light:** ambient light probes keep Link, signs and
+- <img src="assets/readme/sapphire.svg" alt="" width="16"> **True light:** ambient light probes keep the hero, signs and
   plants lit in the shade; the pond's water and the game's own fog are as the console shows them, with no tuned
   workarounds on top.
 - <img src="assets/readme/ruby.svg" alt="" width="16"> **Steady play:** no freeze after loading a save, no exposure
@@ -78,7 +78,7 @@ itself is assembled on your PC, from your copy, in one guided build.
 | <img src="assets/readme/emerald.svg" alt="" width="18"> Disk space | About 2 GB for Setup and its tools, and about 60 GB free while building |
 | <img src="assets/readme/gold.svg" alt="" width="18"> Your game | Program `0400486024DEC000`, update v131072, build `e0f3ccfa`, as a `.nup` or as `romfs` + `exefs` folders. Other versions are refused. |
 
-### Four steps to Hyrule
+### Four steps to play
 
 **1 · Download.** Get **`TriforceSetup.exe`** from the [newest release](https://triforceproject.com)
 and run it.
@@ -146,7 +146,7 @@ In game, **F10** or **Alt+Enter** switches between a window and fullscreen. **F1
 ## <img src="assets/readme/ruby.svg" alt="" width="26"> Controls
 
 Play with a controller, or with keyboard and mouse. The **Controls** tab of the game's Options sets what presses
-each Switch button: one controller input and up to two keys.
+each of the console's buttons: one controller input and up to two keys.
 
 Moving (<kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd>) and the camera (arrow keys, or <kbd>I</kbd> <kbd>J</kbd>
 <kbd>K</kbd> <kbd>L</kbd>) are fixed.
@@ -202,7 +202,7 @@ adds game files. Deeper layouts such as `mods/contents/<title id>/<name>/romfs` 
 1. **Translate:** `nx2/lift.py` turns the game's ARM64 machine code into C.
 2. **Compile:** `nx2/build.py` builds that C together with `host/`, which stands in for the console's operating system.
 3. **Replay:** `host/nvn_native.c` captures every NVN2 graphics call the game makes, and `gpu/vk/` replays it on Vulkan.
-4. **Shaders:** Switch 2 Ampere shaders are lowered to Maxwell (`lower_to_maxwell.h`), then translated to SPIR-V.
+4. **Shaders:** the console's Ampere shaders are lowered to Maxwell (`lower_to_maxwell.h`), then translated to SPIR-V.
 
 The [development guide](docs/development.md) and [design notes](docs/design.md) go deeper.
 
@@ -244,15 +244,15 @@ style and what a good pull request looks like.
 
 *Seven Sages sealed the Triforce. These ones helped forge it.*
 
-> **Triforce is built off Hookshot**, NotRexed's native recompilation of the Switch 2 *Ocarina of Time*.
+> **Triforce is built off Hookshot**, NotRexed's native recompilation project.
 
-- **Evil:** Triforce's creator and lead. Brought Kokiri Forest back to life with
+- **Evil:** Triforce's creator and lead. Brought the forest back to life with
   the GPU culling fixes for trees, ferns, grass, falling leaves, fireflies and the tree canopies; fixed the ambient
   light probes, the pond's water, the game's own fog, the freeze after loading a save and the exposure flicker; made the
   rendering diagnostics tools and Triforce Setup.
 - **NotRexed:** Hookshot, the recompiler this build started from, as well as BlueShell (Mario Kart World),
   Skybound (Tears of the Kingdom) and the a64-kit tools.
-- **Eden** and **Eglantine:** the shader recompiler and the Switch 2 shader work.
+- **Eden** and **Eglantine:** the shader recompiler and the console shader work.
 - **suyu:** the graphics decoders and the AArch64 translator.
 - **seedds (nxnative):** how task and mesh shaders really behave.
 - **zortos293 (Lichii):** Ampere shader lowering, and the compare-exchange retry fix.
@@ -260,9 +260,9 @@ style and what a good pull request looks like.
 - **kinnay (zbic)**, **Opus** and **SDL:** decompression, sound and controller input.
 - **sostenesfreitas (ocarina-recomp):** an early README layout, and notes that confirmed the mesh stage's control
   section.
-- **MythosOfs (Orchid):** the original fog and exposure workaround for Ocarina of Time.
+- **MythosOfs (Orchid):** the original fog and exposure workaround.
 - **Carlos Lopez (clshortfuse) and [RenoDX](https://github.com/clshortfuse/renodx):** the HDR tone mapping, eye
-  adaptation and colour grading of the optional RenoDX HDR build, from RenoDX's mod for Ocarina of Time.
+  adaptation and colour grading of the optional RenoDX HDR build, from RenoDX's mod for this game.
 - **Mesa (NAK):** the map of Ampere's instruction encoding.
 - **Everyone who sent fixes:** SkippySteve (a great many of them), klimovich008, d3zessete, chrispository, vzeol,
   monsterlag, leonidasmark, Segmentree, Zorkats, ShyVortex, hiKareeem, gab9281, i900gaming and more.
