@@ -155,11 +155,12 @@ Moving (<kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd>) and the camera (arr
 
 ## <img src="assets/readme/sapphire.svg" alt="" width="26"> Convert saves
 
-Coming from an emulator? Your journey comes with you. **Convert saves** on the Welcome back screen moves saves of this
-game between Triforce and an emulator, in either direction:
+Coming from NX2navi or an emulator? Your journey comes with you. **Convert saves** on the Welcome back screen brings
+your NX2navi saves into Triforce, and moves saves of this game between Triforce and an emulator in either direction:
 
-- **Into Triforce:** Setup looks for your saves by itself (Eden, yuzu, suyu, Sudachi, Citron, torzu and Ryujinx, and
-  portable copies started from a desktop or Start menu shortcut), or you choose the folder.
+- **Into Triforce:** Setup looks for your saves by itself (an NX2navi game on this PC; Eden, yuzu, suyu, Sudachi,
+  Citron, torzu and Ryujinx, and portable copies started from a desktop or Start menu shortcut), or you choose the
+  folder.
 - **Out of Triforce:** your Triforce saves go back to an emulator the same way.
 
 Every slot comes across as it is. Whatever gets replaced is backed up first, in the `save-backups` folder beside Setup.
@@ -245,11 +246,16 @@ style and what a good pull request looks like.
 *Seven Sages sealed the Triforce. These ones helped forge it.*
 
 > **Triforce is built off Hookshot**, NotRexed's native recompilation project.
+>
+> **NX2navi has merged with Triforce.** The two projects go on as one, under this name.
 
 - **Evil:** Triforce's creator and lead. Brought the forest back to life with
   the GPU culling fixes for trees, ferns, grass, falling leaves, fireflies and the tree canopies; fixed the ambient
   light probes, the pond's water, the game's own fog, the freeze after loading a save and the exposure flicker; made the
   rendering diagnostics tools and Triforce Setup.
+- **NX2navi (chrg6 and its contributors):** the native port that merged with Triforce in November 2026, with its own
+  recompiler, renderer and launcher for the same game. Its players and their saves come along (**Convert saves**
+  finds an NX2navi game by itself), and its work is coming into Triforce release by release.
 - **NotRexed:** Hookshot, the recompiler this build started from, as well as BlueShell (Mario Kart World),
   Skybound (Tears of the Kingdom) and the a64-kit tools.
 - **Eden** and **Eglantine:** the shader recompiler and the console shader work.
