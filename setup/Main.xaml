@@ -650,7 +650,7 @@
           </StackPanel>
           <TextBlock Text="Convert saves" Style="{StaticResource Title}"/>
           <TextBlock Style="{StaticResource Body}" Margin="0,12,0,0"
-                     Text="Bring your saves from an emulator into Triforce, or take Triforce's back out. Whatever gets replaced is backed up first."/>
+                     Text="Bring your saves from NX2navi or an emulator into Triforce, or take Triforce's back out. Whatever gets replaced is backed up first."/>
         </StackPanel>
         <Grid Grid.Row="1" Margin="0,24,0,0">
           <StackPanel Orientation="Horizontal" Margin="-22,0,0,0">

@@ -1,4 +1,4 @@
-// The Convert saves page: an emulator's saves into Triforce, or Triforce's out to an emulator (Saves.cs).
+// The Convert saves page: an emulator's or NX2navi's saves into Triforce, or Triforce's out to one of them (Saves.cs).
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -145,7 +145,7 @@ sealed partial class Shell
         }
         if (pick == null)
         {
-            SavesInfo.Text = (found.Count == 0 ? "No emulator saves of this game were found. " : "") +
+            SavesInfo.Text = (found.Count == 0 ? "No saves of this game from an emulator or NX2navi were found. " : "") +
                              (into ? "Use Choose a folder to point at the saves (the folder with option.sav and slot_00 to slot_05)."
                                    : "Use Choose a folder to point at the emulator's save folder for this game (0400486024DEC000).");
             return;

@@ -80,6 +80,22 @@ static class Program
             Log("convert-saves " + args[cv + 1] + " -> " + args[cv + 2] + ", backup " + (b ?? "none"));
             return 0;
         }
+        // (testing: --find-saves writes every save of the game the Convert saves page would list to setup.log; --find-saves <folder>
+        // the save Choose a folder would take from that folder)
+        var fs = Array.IndexOf(args, "--find-saves");
+        if (fs >= 0)
+        {
+            if (fs + 1 < args.Length && !args[fs + 1].StartsWith("--"))
+            {
+                var set = Saves.FindIn(args[fs + 1]);
+                Log("find-saves " + args[fs + 1] + ": " + (set ?? "none"));
+                return set != null ? 0 : 1;
+            }
+            var sets = Saves.FindEmulatorSaves();
+            foreach (var set in sets) Log("find-saves: " + set.Name + ", " + set.Slots + " slot(s), " + set.Folder);
+            Log("find-saves: " + sets.Count + " found");
+            return 0;
+        }
         // (testing: --check-game <.nup | exefs folder> writes the version check's answer to setup.log)
         var cg = Array.IndexOf(args, "--check-game");
         if (cg >= 0 && cg + 1 < args.Length)
