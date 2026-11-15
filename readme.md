@@ -110,7 +110,7 @@ Opening Triforce shows the **Welcome back** screen first: your game, your saves 
   game files it keeps. Only what changed is compiled again, so it usually takes a few minutes. **Your saves and
   settings stay.** Setup keeps itself up to date the same way.
 - **You're up to date:** press **Continue**.
-- **No internet, or GitHub is down:** Setup says so, and you play what you have.
+- **No internet, or the Triforce site is down:** Setup says so, and you play what you have.
 
 Then come your settings, and **Start game**.
 
@@ -178,8 +178,8 @@ Close the game and the emulator before converting.
 | A short hitch the first time something appears | Expected for now: shaders are being prepared, and the same spot is smooth next time |
 | The wrong language | Edit the code in `language.txt` beside the game; the file lists them all |
 
-Still stuck? [Open an issue](https://github.com/ruckus7382sfgsgdf/CBeta0.2/issues) with where you were in the game, your
-graphics card, a screenshot or clip, and `triforce_log.txt` from the game folder. **Never attach game files.**
+Still stuck? Tell us in the [Triforce Discord](https://discord.gg/triforce): where you were in the game, your graphics
+card, a screenshot or clip, and `triforce_log.txt` from the game folder. **Never attach game files.**
 
 <p align="center"><img src="assets/readme/divider.svg" alt="" width="100%"></p>
 
