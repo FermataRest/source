@@ -2004,11 +2004,12 @@ void copy_pairs(const CopyPair* pairs, int64_t n) {
 std::unique_ptr<Capture> capture_make();
 void shadow_free(Pool& p);
 void shadow_forget(Pool& p, uint64_t at, uint64_t len);   // (the write-back's diff, below: a range its shadow no longer knows)
-void memory_capture_submit() {
+bool memory_capture_submit() {
     std::unique_ptr<Capture> c = capture_make();
-    if (!c) return;
+    if (!c) return false;
     std::lock_guard lk(cap_mu);
     captures.push_back(std::move(c));
+    return true;   // (one is queued: the replay takes it at this submit's place, memory_take_capture)
 }
 /// (the pages the CPU wrote since the last capture, copied now: a submit's capture, or memory_capture_now's)
 std::unique_ptr<Capture> capture_make() {

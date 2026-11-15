@@ -137,7 +137,10 @@ struct Camera {
     VkFormat format = VK_FORMAT_UNDEFINED;   // (the scene's colour target's: for the log)
     const Texture* color = nullptr;          // (the scene's colour target itself: temporal_pre_tonemap draws into it)
     Texture* depth = nullptr;
-    uint64_t depth_gen = 0;   // (texture_destroy_generation when taken: a depth texture destroyed since is not used)
+    // (the two textures' creation numbers and texture_destroyed_count when taken: one destroyed since is not used. It was
+    // texture_destroy_generation, which any texture's end changes: there_still)
+    uint32_t color_id = 0, depth_id = 0;
+    uint64_t noted = 0;
     uint64_t frame = 0;       // (texture_frame_no when taken)
     bool valid = false;
 };
@@ -196,7 +199,8 @@ struct State {
     const Texture* pre_final = nullptr;
     bool pre_direct = false;
     Texture* pre_out = nullptr;
-    uint64_t pre_out_gen = 0;
+    uint32_t pre_out_id = 0;   // (its creation number and texture_destroyed_count when noted: there_still)
+    uint64_t pre_out_noted = 0;
     const Texture* pre_scene = nullptr;
     uint64_t pre_late = 0, pre_drawn = 0, pre_missed = 0;
     int pre_miss_run = 0;   // (frames in a row without the point)
@@ -465,6 +469,13 @@ bool make_pipelines(bool hdr) {
     if (!s.linear && vkCreateSampler(dev.device, &si, nullptr, &s.linear) != VK_SUCCESS) return s.linear = VK_NULL_HANDLE, false;
     return true;
 }
+
+/// A texture kept from an earlier draw is the same one still: it was not destroyed since it was noted (its creation number
+/// and texture_destroyed_count then). texture_destroy_generation was asked before, which any texture's end changes: on a
+/// card whose video memory is full the cache lets textures go in most frames, and each of those frames lost the engine
+/// or its picture at the output's size
+bool there_still(uint32_t id, uint64_t noted) { return !texture_destroyed_since(id, noted); }
+bool there_still(const Camera& cam) { return there_still(cam.color_id, cam.noted) && there_still(cam.depth_id, cam.noted); }
 
 /// A view of a depth texture's depth alone, for sampling (made once per image); of a colour texture, its colour (the
 /// scene's target, sampled and written by temporal_pre_tonemap)
@@ -1134,7 +1145,8 @@ void temporal_note_scene_draw(const Texture* color0, uint32_t width, uint32_t he
     const bool plain = std::isfinite(n) && n > 0.0f && p11 > 0.0f && (!std::isfinite(f) || f > n);
     k.near_z = plain ? n : 0.0f, k.far_z = plain ? (std::isfinite(f) ? f : 1e9f) : 0.0f;
     k.fov_y = plain ? 2.0f * std::atan(1.0f / p11) : 0.0f;
-    k.width = width, k.height = height, k.format = color0->format, k.color = color0, k.depth = depth, k.depth_gen = texture_destroy_generation(), k.frame = now;
+    k.width = width, k.height = height, k.format = color0->format, k.color = color0, k.depth = depth, k.frame = now;
+    k.color_id = color0->id, k.depth_id = depth->id, k.noted = texture_destroyed_count();
     k.valid = true;
 }
 
@@ -1426,7 +1438,7 @@ bool pre_dispatch(VkCommandBuffer cmd, int mode, Texture* in, VkImageView in_vie
         const bool direct = s.pre_direct && out && out == s.pre_out;
         Texture* final = const_cast<Texture*>(s.pre_final);
         s.pre_pending = false, s.pre_candidate = {}, s.pre_final = nullptr, s.pre_direct = false;
-        if (out && !out_level) s.pre_out = out, s.pre_out_gen = texture_destroy_generation();
+        if (out && !out_level) s.pre_out = out, s.pre_out_id = out->id, s.pre_out_noted = texture_destroyed_count();
         if (out && temporal_scene_format(out->format)) note_output(out, out_level);
         return direct || pre_copy(cmd, final, in, in_view, out, out_view, out_level);
     }
@@ -1530,7 +1542,7 @@ bool temporal_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in
     s.asked = texture_frame_no(), s.holding = true;   // (not after a failure: what it holds is let go, temporal_idle)
     if (!in || !in_view || !out || !out_view) return fail("no input or output view");
     if (!cam.valid || texture_frame_no() - cam.frame > 1) return fail("no scene camera this frame");
-    if (cam.depth_gen != texture_destroy_generation()) return fail("the scene depth may be gone");
+    if (!there_still(cam)) return fail("the scene's colour or depth is gone");
     const uint32_t rw = in->width, rh = in->height;
     const uint32_t ow = std::max(1u, out->width >> out_level), oh = std::max(1u, out->height >> out_level);
     if (rw != cam.width || rh != cam.height) return fail("the input is not the scene's size");
@@ -1787,7 +1799,7 @@ Texture* temporal_pre_tonemap(VkCommandBuffer cmd) {
     const bool f3 = !ur::is_dlss(mode) && !ur::is_fsr4(mode);
     Engine* const engine = f3 ? nullptr : &engine_of(mode);
     // (anything unexpected: nothing here, and the upscale's dispatch draws as before, on the tone mapped picture)
-    if (!cam.valid || !scene || (engine && (!engine->e || engine->failed)) || cam.depth_gen != texture_destroy_generation())
+    if (!cam.valid || !scene || (engine && (!engine->e || engine->failed)) || !there_still(cam))
         return nullptr;
     const uint32_t rw = cam.width, rh = cam.height;
     const VkImageUsageFlags need = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
@@ -1849,7 +1861,9 @@ bool temporal_pre_composite(const Texture* color0, uint32_t width, uint32_t heig
     // (the engine's picture is larger than the scene: the draw once more, into the upscale's output at its size)
     Texture* out = s.pre_out;
     const auto& pic = s.pre_picture;
-    if (!pic.view || (pic.width == width && pic.height == height) || !out || s.pre_out_gen != texture_destroy_generation())
+    // (the output as the last frame's dispatch had it, unless that texture itself went since: with the video memory full
+    // textures go in most frames, and by the generation each of those frames was left to pre_copy, the scene's size scaled up)
+    if (!pic.view || (pic.width == width && pic.height == height) || !out || !there_still(s.pre_out_id, s.pre_out_noted))
         return false;
     if (out->width != pic.width || out->height != pic.height || !temporal_scene_format(out->format) ||
         !(out->usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) || out->samples != VK_SAMPLE_COUNT_1_BIT || out->layers != 1)

@@ -537,6 +537,11 @@ def ffmpeg_version_key():
 # instead of Windows' write watch (GetWriteWatch over the 6 GB MKW's GPU sees took ~20 ms a scan, in one thread or
 # four: the race's replay waited ~12 ms a frame for it). RX_SOFT_WRITE_WATCH=0: Windows' write watch (a full rebuild)
 WRITE_TRACK = [] if os.environ.get("RX_SOFT_WRITE_WATCH") == "0" else ["-DA64_WRITE_TRACK"]
+# (triforce) RX_MARK_ONE=1: a lifted store marks the page of its first byte alone (one store and three instructions less
+# at every guest store; the marks were ~5-8% of the game threads' CPU at OoT's Market), and the collection takes a mark
+# as "this page and the next" (host/rx_backend.c collect_in): a store of up to 4 KB reaches no further. A full rebuild.
+if WRITE_TRACK and os.environ.get("RX_MARK_ONE") == "1":
+    WRITE_TRACK = WRITE_TRACK + ["-DA64_MARK_ONE"]
 
 # (hookshot) the host CPU the lifted game and the runtime are built for: x86-64-v3 (AVX2, FMA, BMI1/2, LZCNT,
 # MOVBE; Haswell and Zen 1 on). With FMA the FPX1 fast paths cover double-precision FMA (RECOMP_FPX_FMA64; it took
@@ -802,6 +807,15 @@ def main():
     # (hookshot) code_hot.c, the lift's hot functions together (A64_HOT_FUNCS + A64_HOT_CHUNK=1): at RX_HOT_OPT
     # (default O2), so the hot callees inline into their hot callers
     hot_fl = [("-" + os.environ.get("RX_HOT_OPT", "O2")) if f == "-" + a.opt else f for f in fl]
+    # (triforce) RX_HOT_CAPTURE=<n>: the hot pieces' own -capture-tracking-max-uses-to-explore (see flags()): a hot function
+    # that names the context more often than the limit is compiled as if the context escaped (every guest store may change
+    # it), and the largest functions are among the hottest
+    if os.environ.get("RX_HOT_CAPTURE"):
+        hot_fl = [("-capture-tracking-max-uses-to-explore=" + os.environ["RX_HOT_CAPTURE"])
+                  if f.startswith("-capture-tracking-max-uses-to-explore=") else f for f in hot_fl]
+    # (triforce) RX_HOT_FLAGS=<flags>: more flags for the hot pieces alone (a variant of them without building the rest again)
+    if os.environ.get("RX_HOT_FLAGS"):
+        hot_fl = hot_fl + os.environ["RX_HOT_FLAGS"].split()
     # (hookshot) RX_PGO=gen: code_hot.c counts its branches (host/pgo_rt.c writes them; -O1 builds much sooner, and the counters are
     # placed before the optimiser, so a profile from it fits the -O2 build). RX_PGO=<merged .prof>: built with that profile
     if PGO == "gen":
@@ -925,6 +939,18 @@ def main():
         ngx_deps = tree_headers(os.path.join(NGX_SDK, "include")) if NGX_SDK else b""
         if NGX_SDK:
             print("the Vulkan back end: with NVIDIA DLSS (NVIDIA's NGX SDK in %s)" % NGX_SDK, flush=True)
+        # (NVIDIA DLSS frame generation, a local build's option: HOOKSHOT_STREAMLINE_SDK=<NVIDIA's Streamline SDK, unpacked>.
+        # Only vk_dlssg.cpp sees its headers; nothing of it is linked (sl.interposer.dll is loaded beside the game at run
+        # time). Without it that file is the stubs that say it is not there. Windows only)
+        sl_sdk = os.environ.get("HOOKSHOT_STREAMLINE_SDK", "")
+        if sl_sdk and (LINUX or not os.path.isfile(os.path.join(sl_sdk, "include", "sl_dlss_g.h"))):
+            print("build: HOOKSHOT_STREAMLINE_SDK=%s has no include/sl_dlss_g.h (or this is not a Windows build): built "
+                  "without NVIDIA DLSS frame generation" % sl_sdk, flush=True)
+            sl_sdk = ""
+        sl_flags = ["-DHOOKSHOT_DLSSG", "-I" + os.path.join(sl_sdk, "include")] if sl_sdk else []
+        sl_deps = tree_headers(os.path.join(sl_sdk, "include")) if sl_sdk else b""
+        if sl_sdk:
+            print("the Vulkan back end: with NVIDIA DLSS frame generation (NVIDIA's Streamline SDK in %s)" % sl_sdk, flush=True)
         # (AMD FSR 4, a build's option too: only vk_fsr4.cpp sees AMD's headers; without them it is the stubs that say FSR is
         # not there)
         fsr_flags = ["-DHOOKSHOT_FSR", "-I" + os.path.join(kit.HERE, "..", "third_party", "fidelityfx")] if FSR else []
@@ -974,12 +1000,14 @@ def main():
                             vflags + ([shader_stamp] if os.path.basename(src) == "vk_shader.cpp" else []) +
                             ([stamp_def] if os.path.basename(src) == "vk_menu.cpp" else []) +
                             (ngx_flags if os.path.basename(src) == "vk_dlss.cpp" else []) +
+                            (sl_flags if os.path.basename(src) == "vk_dlssg.cpp" else []) +
                             (imgui_flags if os.path.basename(src) in imgui_users else []) +
                             (fsr_flags if os.path.basename(src) == "vk_fsr4.cpp" else []) +
                             (renodx_flags if os.path.basename(src) == "vk_renodx.cpp" else []),
                             vk_lib_deps if lib else vdeps + (logo_text if os.path.basename(src) == "vk_imgui.cpp" else b"") +
                             (renodx_deps if os.path.basename(src) == "vk_renodx.cpp" else b"") +
                             (ngx_deps if os.path.basename(src) == "vk_dlss.cpp" else b"") +
+                            (sl_deps if os.path.basename(src) == "vk_dlssg.cpp" else b"") +
                             (imgui_deps if os.path.basename(src) in imgui_users else b"")))
         if NGX_SDK and not LINUX and toolchain.mingw():
             # (llvm-mingw: NVIDIA's static library was built with Microsoft's compiler for its static runtime (/MT). What it asks

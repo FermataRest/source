@@ -31,6 +31,7 @@ int hos_mods_has(const char *prefix, const char *suffix);   /* mods.c */
 #define TEXTURES_PATH "ui/layout2archive/common.product.100.nin_ounce_nvn2.bntx.zs"
 #define LAYOUTS_PATH "ui/layout2archive/common.product.100.nin_ounce_nvn2.blarc.zs"
 #define SIZES_PATH "system/resource/resourcesizetable."   /* (then the version, ".rsizetable.zs") */
+#define CAMERA_PATH "pack/actor/playercamera.pack.zs"   /* (Triforce: the Camera speed row, build_camera) */
 #define MAGIC 0x18029a7fu
 #define PAD_BASE 0xF700
 static const char *const faces[HOS_PROMPT_N] = {"switch", "xbox", "ps4", "ps5", "steamdeck"};
@@ -391,7 +392,10 @@ static void ring_places(const int *bind, int place[4]) {
    - the ocarina hint's icons moved apart for the wide ones bound (prompts/<face>/hint.bin, nx2/prompt_assets.py HINTS: "HPHN",
      u32 count of pad inputs, each one's icon's extra width (f32), u32 panes; each: u32 offset, u8 slot, 3 bytes, f32 x): each
      icon the one before's extra further on, the last one where it is;
-   none when both are as the game has them (the game's own file) */
+   - the hearts, the item slot and the small map out at a wide picture's sides (prompts/wide.bin, nx2/prompt_assets.py HUD_SIDE_PANES: "HPWD", u32
+     count; each: u32 offset, i8 side, 3 bytes, f32 x), with the Insert menu's Ultrawide HUD row on Screen edges
+     (host/oot_wide_hud.h);
+   none when all are as the game has them (the game's own file) */
 static int build_layouts(char *out, size_t cap) {
     char dir[MAX_PATH], path[MAX_PATH];
     int face;
@@ -453,6 +457,27 @@ static int build_layouts(char *out, size_t cap) {
             h = fnv(fnv(h, shift, sizeof shift), hint, (size_t)hn);
         }
     }
+    float hos_wide_hud_out(void);
+    const float wide_out = hos_wide_hud_out();
+    long wn = 0;
+    snprintf(path, sizeof path, "%sprompts/wide.bin", dir);
+    uint8_t *wide = wide_out > 0.0f ? read_all(path, "HPWD", &wn) : NULL;
+    float *wxs = NULL;
+    if (wide) {
+        const uint32_t count = rd32le(wide + 4);
+        if (count && count <= ((size_t)wn - 8) / 12) {
+            wxs = (float *)malloc(count * sizeof *wxs);
+            for (uint32_t k = 0; k < count; k++) {
+                const uint8_t *e = wide + 8 + 12 * k;
+                memcpy(&wxs[k], e + 8, 4);
+                wxs[k] += (float)(int8_t)e[4] * wide_out;
+                add_run(&runs, &nruns, &cap_runs, rd32le(e), 4, (const uint8_t *)&wxs[k]);
+            }
+            h = fnv(fnv(h, &wide_out, sizeof wide_out), wide, (size_t)wn);
+        }
+    } else if (wide_out > 0.0f) {
+        hos_log("prompts: no prompts/wide.bin: the Ultrawide HUD stays in the middle (Setup's Update makes it)");
+    }
     int ok = 0;
     if (nruns) {
         char keypath[MAX_PATH];
@@ -460,9 +485,12 @@ static int build_layouts(char *out, size_t cap) {
         snprintf(path, sizeof path, "%sprompts/Common.blarc", dir);
         snprintf(keypath, sizeof keypath, "%sprompts/Common.blarc.key", dir);
         ok = write_patched(path, out, keypath, h, runs, nruns);
-        hos_log("prompts: the Talk ring's A B X Y at places %d %d %d %d, the ocarina hint %s%s", place[0], place[1], place[2],
-                place[3], xs ? "spread" : "as is", ok ? "" : ": could not be written");
+        hos_log("prompts: the Talk ring's A B X Y at places %d %d %d %d, the ocarina hint %s, the hearts, item slot and map %s%s",
+                place[0], place[1], place[2], place[3], xs ? "spread" : "as is", wxs ? "at the picture's sides" : "as is",
+                ok ? "" : ": could not be written");
     }
+    free(wxs);
+    free(wide);
     free(xs);
     free(hint);
     free(runs);
@@ -499,11 +527,67 @@ static int build(char *out, size_t cap) {
     return ok;
 }
 
+/* (Triforce) The Insert menu's Camera speed row (camera_speed= in the options file, percent; HOS_CAMERA_SPEED=<percent>
+   over it): how fast the right stick turns the camera, times the game's own speed at any of the five Camera sensitivity
+   settings of its Options. The rates are five floats in the game's camera pack (nx2/prompt_assets.py CAMERA has where and
+   why): prompts/PlayerCamera.pack.zs is that pack (prompts/PlayerCamera.pack) with each rate of prompts/camera.bin ("HPCM",
+   u32 count; each: u32 offset, f32 the game's rate) times the factor. Read once: the game loads the pack at its start, so
+   the row applies after a restart. At 100 the game's own file is served. NX2navi's camera speed setting, without its
+   search of the game's memory for a change during play. */
+int hos_ini_option(const char *key, int otherwise);
+static volatile double camera_applied = 1.0;   /* the factor in the pack the game was given */
+static double camera_wanted(void) {
+    static int v = -1;
+    if (v < 0) {
+        const char *e = getenv("HOS_CAMERA_SPEED");
+        v = e && atoi(e) > 0 ? atoi(e) : hos_ini_option("camera_speed", 100);
+        v = v < 25 ? 25 : v > 300 ? 300 : v;
+    }
+    return v / 100.0;
+}
+/* host/nn_hid.c: the mouse's panning reaches the game as the right stick; divided by this it keeps its own sensitivity */
+double hos_camera_speed(void) {
+    return camera_applied;
+}
+static int build_camera(char *out, size_t cap) {
+    char dir[MAX_PATH], path[MAX_PATH], keypath[MAX_PATH];
+    int face;
+    const double k = camera_wanted();
+    if (k == 1.0 || !setup(dir, sizeof dir, &face)) return 0;
+    long tn = 0;
+    snprintf(path, sizeof path, "%sprompts/camera.bin", dir);
+    uint8_t *t = read_all(path, "HPCM", &tn);
+    const uint32_t count = t ? rd32le(t + 4) : 0;
+    if (!count || count > 8 || (size_t)tn < 8 + 8 * (size_t)count) {
+        hos_log("prompts: no prompts/camera.bin: the camera keeps the game's speed (Setup's Update makes it)");
+        free(t);
+        return 0;
+    }
+    float rates[8];
+    size_t nruns = 0, cap_runs = 8;
+    Run *runs = (Run *)malloc(cap_runs * sizeof *runs);
+    for (uint32_t i = 0; i < count; i++) {
+        memcpy(&rates[i], t + 8 + 8 * i + 4, 4);
+        rates[i] = (float)(rates[i] * k);
+        add_run(&runs, &nruns, &cap_runs, rd32le(t + 8 + 8 * i), 4, (const uint8_t *)&rates[i]);
+    }
+    const uint64_t h = fnv(fnv(0xcbf29ce484222325ull, &k, sizeof k), t, (size_t)tn);
+    snprintf(out, cap, "%sprompts/PlayerCamera.pack.zs", dir);
+    snprintf(path, sizeof path, "%sprompts/PlayerCamera.pack", dir);
+    snprintf(keypath, sizeof keypath, "%sprompts/PlayerCamera.key", dir);
+    const int ok = write_patched(path, out, keypath, h, runs, nruns);
+    if (ok) camera_applied = k;
+    hos_log("prompts: camera speed x%.2f, the first rate %.2f%s", k, (double)rates[0], ok ? "" : ": could not be written");
+    free(runs);
+    free(t);
+    return ok;
+}
+
 /* mods.c: the file for a RomFS path the prompts replace (key: lower case, '/'), 1 with one. Asked only when no mod has
    the file: a mod's own wins */
 int hos_prompts_romfs(const char *key, char *out, size_t cap) {
-    static volatile LONG state[3];   /* the font, the textures, the layouts: 0 not built, 1 being built, 2 built, 3 none */
-    static char path[3][MAX_PATH];
+    static volatile LONG state[4];   /* the font, the textures, the layouts, the camera: 0 not built, 1 being built, 2 built, 3 none */
+    static char path[4][MAX_PATH];
     const size_t kn = strlen(key);
     if (!strncmp(key, SIZES_PATH, sizeof SIZES_PATH - 1) && kn > 14 && !strcmp(key + kn - 14, ".rsizetable.zs")) {
         char dir[MAX_PATH];   /* (the game's size table with room for the faces' fonts, larger than its: nx2/prompt_assets.py) */
@@ -512,9 +596,10 @@ int hos_prompts_romfs(const char *key, char *out, size_t cap) {
         snprintf(out, cap, "%sprompts/rsizetable.zs", dir);
         return GetFileAttributesA(out) != INVALID_FILE_ATTRIBUTES;
     }
-    const int which = !strcmp(key, FONT_PATH) ? 0 : !strcmp(key, TEXTURES_PATH) ? 1 : !strcmp(key, LAYOUTS_PATH) ? 2 : -1;
+    const int which = !strcmp(key, FONT_PATH) ? 0 : !strcmp(key, TEXTURES_PATH) ? 1 : !strcmp(key, LAYOUTS_PATH) ? 2 :
+                      !strcmp(key, CAMERA_PATH) ? 3 : -1;
     if (which < 0) return 0;
-    static int (*const builders[3])(char *, size_t) = {build, build_textures, build_layouts};
+    static int (*const builders[4])(char *, size_t) = {build, build_textures, build_layouts, build_camera};
     if (InterlockedCompareExchange(&state[which], 1, 0) == 0)
         InterlockedExchange(&state[which], builders[which](path[which], MAX_PATH) ? 2 : 3);
     while (state[which] == 1) Sleep(1);

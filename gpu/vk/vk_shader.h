@@ -31,6 +31,10 @@ struct Stage {
 /// recompiler) run over the stage's constant banks and storage buffers as the draw has them
 uint32_t stage_handle(const NvnState& s, const Stage& st, uint32_t program, uint32_t element = 0);
 
+/// (Triforce, texture detail) Whether the module reads the texture at that binding by texel position or asks its size
+/// (spv_exact.h); false on a card whose textures are whole anyway. Any thread of the replay.
+bool shader_reads_exact(VkShaderModule module, uint32_t binding);
+
 /// A translated program variant: its stages, in descriptor order. The pipeline layout and pipelines made for it live
 /// in vk_pipeline.cpp (keyed by key).
 struct Program {

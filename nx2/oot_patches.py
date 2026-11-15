@@ -372,6 +372,42 @@ SOLVER_NEW = SOLVER_OLD.replace(
 SOLVER_DECL = "extern uint32_t hos_oot_solver_steps(uint32_t game, uint32_t scaled_bits, uint32_t per_frame_bits);\n"
 
 
+# Three more places that go wrong with a frame step under one frame (host/oot_high_fps.h has why and the logic; at a cap of 60 the
+# host hands back what the game computes). Found and fixed for this build by NX2navi (its recomp/patches-v111.txt, the sets
+# ofollow, owater and orecord: main+0x13d704, +0x13a064, +0x389ac20; +0x3876014, +0x38827f8, +0x632cfc; +0x32926c8, +0x3293410,
+# +0x3296b08, +0x3296da4; main is at 0x80020000 here), there as code words, here as hooks in the lifted C:
+# - the character controller's three follow-surface updates compare the physics' inverse step with 100.0 and keep a tenth of
+#   the floor's velocity above it: every update above 100 fps, so a moving platform slid out from under Link. The 100.0 comes
+#   from hos_oot_floor_cut (100 / the frame's 60 fps frames while that is under one).
+# - the two water managers and the interactive floors (the Deku Tree's ground webs) run seconds / (1/60 s), cut to whole,
+#   fixed steps: none in an update shorter than 1/60 s, so the surfaces stood still above 60 fps. Before the cut the quotient
+#   goes through hos_oot_sim_steps (x19 the object, each function's x0): the whole steps with the object's remainder kept.
+# - the ocarina recorder's clock adds (unsigned)frame step at four places: 0 above 60 fps, so a recording lost its rests.
+#   hos_oot_record_frames carries the fraction.
+FLOOR_HEADS = ("void f_8015d490(Ctx *__restrict A64_NOESC c) {\n", "void f_80159dc0(Ctx *__restrict A64_NOESC c) {\n",
+               "void f_838baa40(Ctx *__restrict A64_NOESC c) {\n")
+# (mov w8, #0x42c80000; fmov s1, w8: the 100.0 of the compare that follows)
+FLOOR_OLD = ("    c->x[8] = 0x42c80000ULL;\n    c->x[8] &= 0xFFFFFFFFULL;\n"
+             "    { a64_vset64(c->vreg[1],0); memcpy(&c->vreg[1][0],&c->x[8],4); }\n")
+FLOOR_NEW = FLOOR_OLD.replace("c->x[8] = 0x42c80000ULL;",
+                              "c->x[8] = hos_oot_floor_cut();   /* (nx2/oot_patches.py: a floor's carry above 100 fps) */", 1)
+FLOOR_DECL = "extern uint32_t hos_oot_floor_cut(void);\n"
+# (a function and the register its cut goes to: fdiv s0, s8, s0 then fcvtzs w<n>, s0, the function's one cut of s0 into that register)
+SIM_SITES = (("void f_83895f20(Ctx *__restrict A64_NOESC c) {\n", 8), ("void f_838a2660(Ctx *__restrict A64_NOESC c) {\n", 8),
+             ("void f_80652cb0(Ctx *__restrict A64_NOESC c) {\n", 22))
+SIM_OLD = "    c->x[%d]=recomp_fp_to_int(c->vreg[0][0]&UINT64_C(0xffffffff),32,32,1,3,c->fpcr,&c->fpsr);\n"
+SIM_HOOK = ("    a64_vset64(c->vreg[0],hos_oot_sim_steps(c->x[19], (uint32_t)c->vreg[0][0]));"
+            "   /* (nx2/oot_patches.py: fixed steps above 60 fps) */\n")
+SIM_DECL = "extern uint32_t hos_oot_sim_steps(uint64_t object, uint32_t quotient_bits);\n"
+# (a function and how many times it adds the step to the clock: fcvtzu w8, s0)
+RECORD_SITES = (("void f_832b2690(Ctx *__restrict A64_NOESC c) {\n", 1), ("void f_832b32b0(Ctx *__restrict A64_NOESC c) {\n", 1),
+                ("void f_832b6840(Ctx *__restrict A64_NOESC c) {\n", 2))
+RECORD_OLD = "    c->x[8]=recomp_fp_to_int(c->vreg[0][0]&UINT64_C(0xffffffff),32,32,0,3,c->fpcr,&c->fpsr);\n"
+RECORD_NEW = ("    c->x[8]=hos_oot_record_frames((uint32_t)c->vreg[0][0]);"
+              "   /* (nx2/oot_patches.py: the ocarina recorder's clock above 60 fps) */\n")
+RECORD_DECL = "extern uint32_t hos_oot_record_frames(uint32_t step_bits);\n"
+
+
 def _function(s, head_text):
     """(start, end) of the function whose head is head_text, or None"""
     head = s.find(head_text)
@@ -417,6 +453,108 @@ def patch_solver_steps(s):
             done += 1
     if done and SOLVER_DECL not in s:
         s = s.replace('#include "a64.h"\n', '#include "a64.h"\n' + SOLVER_DECL, 1)
+    return s, done
+
+
+def patch_floor_carry(s):
+    """The follow-surface updates' compare: (s, how many of the three are in s with the hook, made now or before)"""
+    done = 0
+    for head_text in FLOOR_HEADS:
+        at = _function(s, head_text)
+        if at is None:
+            continue
+        head, end = at
+        body = s[head:end]
+        if body.count(FLOOR_NEW) == 1:
+            done += 1
+        elif body.count(FLOOR_OLD) == 1:
+            s = s[:head] + body.replace(FLOOR_OLD, FLOOR_NEW, 1) + s[end:]
+            done += 1
+    if done and FLOOR_DECL not in s:
+        s = s.replace('#include "a64.h"\n', '#include "a64.h"\n' + FLOOR_DECL, 1)
+    return s, done
+
+
+def patch_sim_steps(s):
+    """The height-field surfaces' fixed steps: (s, how many of the three places are in s with the hook, made now or before)"""
+    done = 0
+    for head_text, reg in SIM_SITES:
+        at = _function(s, head_text)
+        if at is None:
+            continue
+        head, end = at
+        body = s[head:end]
+        old = SIM_OLD % reg
+        if body.count(SIM_HOOK + old) == 1:
+            done += 1
+        elif body.count(old) == 1 and SIM_HOOK not in body:
+            s = s[:head] + body.replace(old, SIM_HOOK + old, 1) + s[end:]
+            done += 1
+    if done and SIM_DECL not in s:
+        s = s.replace('#include "a64.h"\n', '#include "a64.h"\n' + SIM_DECL, 1)
+    return s, done
+
+
+def patch_record_clock(s):
+    """The ocarina recorder's clock: (s, how many of its four adds are in s with the hook, made now or before). A function
+    whose adds are not as many as RECORD_SITES says (another game version) is left as it is."""
+    done = 0
+    for head_text, count in RECORD_SITES:
+        at = _function(s, head_text)
+        if at is None:
+            continue
+        head, end = at
+        body = s[head:end]
+        if body.count(RECORD_NEW) == count and RECORD_OLD not in body:
+            done += count
+        elif body.count(RECORD_OLD) == count and RECORD_NEW not in body:
+            s = s[:head] + body.replace(RECORD_OLD, RECORD_NEW) + s[end:]
+            done += count
+    if done and RECORD_DECL not in s:
+        s = s.replace('#include "a64.h"\n', '#include "a64.h"\n' + RECORD_DECL, 1)
+    return s, done
+
+
+# The sprint button (host/oot_sprint.h has the rules, host/oot_sprint.c the game's addresses; after NX2navi's set "sprint").
+# Link sprints while his input flags hold the dash input (bit 4), which the game sets only out of a roll. Two functions load
+# those flags and test the bit: his movement update f_804caa80 (to start the sprint and to keep it), and the update of his
+# stance and camera f_80c225d0 (the low byte). After each load the host gets the flags and gives them back, with the bit
+# while the button's sprint is on. With the Sprint button row off the call returns what it got.
+SPRINT_LINK_HEAD = "void f_804caa80(Ctx *__restrict A64_NOESC c) {\n"
+SPRINT_LINK_OLD = ("    c->x[10]=recomp_load64(c,c->x[19] + 80);\n"
+                   "    c->x[9]=recomp_load32(c,c->x[19] + 44);\n"
+                   "    c->x[10]=recomp_load64(c,c->x[10] + 0);\n")
+SPRINT_LINK_ADD = "    c->x[10]=hos_oot_sprint_link(c,c->x[19],c->x[10]);   /* (nx2/oot_patches.py: the sprint button) */\n"
+SPRINT_STANCE_HEAD = "void f_80c225d0(Ctx *__restrict A64_NOESC c) {\n"
+SPRINT_STANCE_OLD = ("    c->x[8]=recomp_load64(c,c->x[19] + 80);\n"
+                     "    c->x[8]=recomp_load8(c,c->x[8] + 0);\n"
+                     "if (((c->x[8] >> 4) & 1)) { goto L_80c27f54; }\n")
+SPRINT_STANCE_NEW = ("    c->x[8]=recomp_load64(c,c->x[19] + 80);\n"
+                     "    c->x[8]=recomp_load8(c,c->x[8] + 0);\n"
+                     "    c->x[8]=hos_oot_sprint_stance(c,c->x[19],c->x[8]);   /* (nx2/oot_patches.py: the sprint button) */\n"
+                     "if (((c->x[8] >> 4) & 1)) { goto L_80c27f54; }\n")
+SPRINT_DECL = ("extern uint64_t hos_oot_sprint_link(Ctx *c, uint64_t link, uint64_t flags);\n"
+               "extern uint64_t hos_oot_sprint_stance(Ctx *c, uint64_t link, uint64_t flags);\n")
+
+
+def patch_sprint(s):
+    """The sprint button's two calls: (s, how many of the two are in s, made now or before). A function whose code differs
+    (another game version) is left as it is."""
+    done = 0
+    for head_text, old, new in ((SPRINT_LINK_HEAD, SPRINT_LINK_OLD, SPRINT_LINK_OLD + SPRINT_LINK_ADD),
+                                (SPRINT_STANCE_HEAD, SPRINT_STANCE_OLD, SPRINT_STANCE_NEW)):
+        at = _function(s, head_text)
+        if at is None:
+            continue
+        head, end = at
+        body = s[head:end]
+        if body.count(new) == 1:
+            done += 1
+        elif body.count(old) == 1:
+            s = s[:head] + body.replace(old, new) + s[end:]
+            done += 1
+    if done and SPRINT_DECL not in s:
+        s = s.replace('#include "a64.h"\n', '#include "a64.h"\n' + SPRINT_DECL, 1)
     return s, done
 
 
@@ -476,6 +614,8 @@ def apply(gen, *, protect_hearts=False, required=False):
     step_sites, step_files = 0, []   # (the divides with the hook, and the files that have it)
     whole_sites = 0   # (the counters of WHOLE_SITES with the whole frames: patch_whole_frames)
     sound_jobs = solver_sites = 0   # (patch_sound_job, patch_solver_steps: the places found with their hooks)
+    floor_sites = sim_sites = record_sites = 0   # (patch_floor_carry, patch_sim_steps, patch_record_clock: the same)
+    sprint_sites = 0   # (patch_sprint: its two calls)
     for path in sorted(glob.glob(os.path.join(glob.escape(gen), "code_*.c"))):
         with open(path, encoding="utf-8", newline="") as f:
             s = f.read()
@@ -561,12 +701,41 @@ def apply(gen, *, protect_hearts=False, required=False):
         if solver != out:
             print("oot_patches: the solver steps rounded up above 60 fps in", os.path.basename(path))
         out = solver
+        floor, found = patch_floor_carry(out)
+        floor_sites += found
+        if floor != out:
+            print("oot_patches: a floor's carry above 100 fps in", os.path.basename(path))
+        out = floor
+        sim, found = patch_sim_steps(out)
+        sim_sites += found
+        if sim != out:
+            print("oot_patches: the water and floor surfaces' fixed steps above 60 fps in", os.path.basename(path))
+        out = sim
+        record, found = patch_record_clock(out)
+        record_sites += found
+        if record != out:
+            print("oot_patches: the ocarina recorder's clock above 60 fps in", os.path.basename(path))
+        out = record
+        sprinted, found = patch_sprint(out)
+        sprint_sites += found
+        if sprinted != out:
+            print("oot_patches: the sprint button in", os.path.basename(path))
+        out = sprinted
         if out != s:
             whole_write.write_whole(path, out, newline="")
     if sound_jobs != 1:   # (without it, above 60 fps sounds and then the music can stop after a few loading zones)
         print("oot_patches: WARNING: the sound job was found %d times, not once" % sound_jobs)
     if solver_sites != len(SOLVER_HEADS):   # (without them, above 60 fps moving platforms can drop Link)
         print("oot_patches: WARNING: the solver step count was found at %d of %d places" % (solver_sites, len(SOLVER_HEADS)))
+    if floor_sites != len(FLOOR_HEADS):   # (without them, above 100 fps a moving platform carries Link at a tenth of its speed)
+        print("oot_patches: WARNING: a floor's carry was found at %d of %d places" % (floor_sites, len(FLOOR_HEADS)))
+    if sim_sites != len(SIM_SITES):   # (without them, above 60 fps the water and web surfaces stand still)
+        print("oot_patches: WARNING: the surfaces' fixed steps were found at %d of %d places" % (sim_sites, len(SIM_SITES)))
+    if record_sites != sum(n for _, n in RECORD_SITES):   # (without them, above 60 fps a recorded song loses its rests)
+        print("oot_patches: WARNING: the ocarina recorder's clock was found at %d of %d places"
+              % (record_sites, sum(n for _, n in RECORD_SITES)))
+    if sprint_sites != 2:   # (without them the Sprint button row does nothing)
+        print("oot_patches: WARNING: the sprint button's calls were found at %d of 2 places" % sprint_sites)
     for what, n in done.items():
         if n != 1:
             print("oot_patches: WARNING: the %s was found %d times" % (what, n))

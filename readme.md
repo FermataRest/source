@@ -173,7 +173,7 @@ Close the game and the emulator before converting.
 | What happens | What to try |
 |---|---|
 | Setup says the build isn't supported | Check you chose the right game, with its update installed |
-| Setup says GitHub could not be reached | Check your connection; you can still play what you have |
+| Setup says the Triforce site could not be reached | Check your connection; you can still play what you have |
 | The game opens and closes straight away | Update your graphics driver |
 | A short hitch the first time something appears | Expected for now: shaders are being prepared, and the same spot is smooth next time |
 | The wrong language | Edit the code in `language.txt` beside the game; the file lists them all |

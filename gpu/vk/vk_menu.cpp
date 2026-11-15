@@ -33,6 +33,7 @@
 #include <string>
 #include <vector>
 
+#include "vk_dlssg.h"
 #include "vk_paths.h"
 #include "vk_menu.h"
 #include "vk_menu_hit.h"
@@ -112,6 +113,14 @@ const char* tx_framegen(int v) {
     return t[v];
 }
 const char* tx_onoff(int v) { return v ? "On" : "Off"; }
+const char* tx_dlssg(int v) { return v == 1 ? "2x" : v == 2 ? "3x" : v == 3 ? "4x" : "Off"; }
+/// (what runs in this session, or why not: vk_dlssg.cpp. Variant 0 stands for the longest line, for the menu's height)
+const char* hn_dlssg(int v, int variant) {
+    if (variant > 0) return nullptr;
+    if (variant == 0) return "Not on this graphics card or driver: it needs an RTX 40 or 50 card.";
+    if (!v) return "Off.";
+    return mkwvk::dlssg::asked() ? mkwvk::dlssg::status() : "Starts with the next start of the game.";
+}
 const char* tx_menu_shortcut(int v) {
     static const char* const names[] = {"Insert or F1", "F1 only"};   // (F1 is never turned off: the menu is always one key away)
     return names[v ? 1 : 0];
@@ -124,7 +133,8 @@ const char* tx_nits(int v) {
 }
 const char* tx_fps_cap(int v) {
     static const char* const t[] = {"60 (the console's)", "90", "120", "144", "165", "240"};
-    return t[v < 0 ? 0 : v > 5 ? 5 : v];
+    if (v < 0) return v == -1 ? "45" : v == -2 ? "40" : "30";   // (Triforce: the limits under 60, host/nn_vi.c fps_max)
+    return t[v > 5 ? 5 : v];
 }
 // (hookshot) Motion controls: the choice, and whether a connected controller has a gyroscope (host/pad_sdl.c). Either can be
 // chosen whatever is connected: a pad plugged in later is read when it comes
@@ -393,6 +403,7 @@ const char* tx_text_speed(int v) {
     return t[v];
 }
 const char* tx_ultrawide(int v) { return v ? "Monitor's shape" : "16:9"; }
+const char* tx_wide_hud(int v) { return v ? "Screen edges" : "Middle"; }
 const char* tx_prompts(int v) {
     static const char* t[HOS_PROMPT_N + 1] = {"Auto", "Switch", "Xbox", "PlayStation 4", "PlayStation 5", "Steam Deck"};
     return t[std::min(std::max(v, 0), (int)HOS_PROMPT_N)];
@@ -467,6 +478,9 @@ const char* hn_mic(int v, int variant) {
     return missing ? "Not plugged in: Default stands in until it is back." : "This microphone, by its name. A change applies at once.";
 }
 const char* tx_rumble(int v) { return v ? tx_percent(v) : "Off"; }
+const char* tx_volume(int v) { return v ? tx_percent(v) : "Muted"; }
+const char* tx_sprint(int v) { return v == 1 ? "Left stick click" : v == 2 ? "B" : "Off"; }
+const char* tx_sprint_mode(int v) { return v ? "Hold" : "Toggle"; }
 // (hookshot) Menu size: how large the overlays are drawn (vk_ui.h unit); Auto is Large in fullscreen at 1080 lines and up while
 // a controller is the menu's input, else Medium
 bool pad_last = false;   // (a controller was the menu's last input: its buttons in the prompts)
@@ -634,6 +648,11 @@ Row rows[] = {
      hn_output_res, true},
     {TAB_DISPLAY, "Ultrawide", &opts.ultrawide, 0, 1, 1, tx_ultrawide,
      "The camera's shape on a screen wider or narrower than 16:9 (4:3, 16:10). Applies after a restart.", hn_ultrawide, true},
+    // (Triforce: host/oot_wide_hud.c)
+    {TAB_DISPLAY, "Ultrawide HUD", &opts.wide_hud, 0, 1, 1, tx_wide_hud,
+     "With Ultrawide: where the hearts, the item slot and the map sit on a screen wider than 16:9. Middle: in the "
+     "middle 16:9, as on a normal screen. Screen edges: out in the screen's corners. Applies after a restart.", nullptr,
+     true, true},
     {TAB_DISPLAY, "Ultrawide menus", &opts.wide_menus, 0, 2, 1, tx_wide_menus,
      "With Ultrawide: the pause, item and map menus, and what shows beside them. Loading screens and pre-rendered movies, "
      "which draw no world either, get the same sides. Changes at once.", hn_wide_menus},
@@ -677,8 +696,9 @@ Row rows[] = {
      "RenoDX's colour grading: the scene's saturation. 50 is neutral.", nullptr, false, true},
     {TAB_DISPLAY, "RenoDX bloom", &opts.rdx_bloom, 0, 100, 5, tx_rdx_grade,
      "How strong the glow around bright things is. 50 is the game's.", nullptr, false, true},
-    {TAB_DISPLAY, "Game frame rate cap", &opts.fps_cap, 0, 5, 1, tx_fps_cap,
+    {TAB_DISPLAY, "Game frame rate cap", &opts.fps_cap, -3, 5, 1, tx_fps_cap,
      "Limits frames rendered by the game. Generated frames are additional. Takes a restart. "
+     "30, 40 and 45 are for a PC or handheld that holds one of them steadily where 60 swings; the game keeps its speed. "
      "Past 60 is experimental: the game keeps real time, but some cutscenes and bosses can misbehave (Gohma, the intro's "
      "narration). 60 is the safe choice.",
      nullptr, true, true},
@@ -712,6 +732,11 @@ Row rows[] = {
     {TAB_GRAPHICS, "Frame generation", &opts.framegen, 0, 8, 1, tx_framegen,
      "Makes frames between the game's own, for smoother motion, at a little input delay. Fast motion or camera cuts can "
      "show artifacts.", hn_framegen, false, true},
+    // (Triforce, after NX2navi's: vk_dlssg.cpp. Read at the start, where the device is made through NVIDIA's Streamline)
+    {TAB_GRAPHICS, "DLSS frame generation", &opts.dlssg, 0, 3, 1, tx_dlssg,
+     "NVIDIA RTX 40 and 50 cards: frames made between the game's own by NVIDIA DLSS, from the scene's depth and motion, "
+     "with NVIDIA Reflex. The Frame generation row above is not used with it. Applies after a restart.", hn_dlssg, true,
+     true},
     {TAB_GRAPHICS, "Frame pacing", &opts.pace, 0, 1, 1, tx_onoff, "When each frame is shown.", hn_pace},
     {TAB_GRAPHICS, "NVIDIA Reflex", &opts.reflex, 0, 2, 1, tx_reflex,
      "NVIDIA GPUs: each frame starts as late as it can, for less input delay. Not used with frame generation.", hn_reflex},
@@ -727,14 +752,17 @@ Row rows[] = {
      hn_speed},
     {TAB_SYSTEM, "Text speed", &opts.text_speed, 0, 3, 1, tx_text_speed,
      "How fast the letters of dialogue and other messages appear.", hn_text_speed},
+    // (Triforce, after NX2navi's volume row: over the game's own mix, host/nn_audio.c; the game's own Options have none)
+    {TAB_AUDIO, "Master volume", &opts.volume, 0, 100, 5, tx_volume,
+     "How loud the game is, in percent of its own volume. The game's sounds and music keep their balance.", nullptr, false,
+     true},
     {TAB_AUDIO, "Audio output", &opts.audio_output, 0, 2, 1, tx_audio_output,
      "The speakers the game mixes its sound for. Applies after a restart.", hn_audio_output, true, true},
     {TAB_AUDIO, "Microphone", &opts.mic, 0, 2 + kMaxMics, 1, tx_mic,
      "What the ocarina hears when the game's microphone option is on (playing an instrument, or humming).", hn_mic, false,
      true},
     {TAB_SYSTEM, "Discord status", &opts.discord, 0, 1, 1, tx_onoff,
-     "Shows the game and the time played in your Discord status, while Discord runs on this PC. Triforce has no Discord "
-     "application of its own: it needs discord_app_id= in triforce_options.ini.", nullptr, false,
+     "Shows \"Playing Triforce\" and the time played in your Discord status, while Discord runs on this PC.", nullptr, false,
      true},
 
     // Controls (11 rows; Motion opens the 6 TAB_MOTION rows, Controls its page with the 2 TAB_PAGE rows)
@@ -747,10 +775,22 @@ Row rows[] = {
      "count. The - and = keys change it in game too.", nullptr, false, true},
     {TAB_CONTROLS, "Invert mouse vertical", &opts.mouse_invert, 0, 1, 1, tx_onoff, "Swaps up and down for the mouse.",
      hn_mouse_invert, false, true},
+    // (Triforce: host/prompts.c build_camera)
+    {TAB_CONTROLS, "Camera speed", &opts.camera_speed, 25, 300, 5, tx_sens,
+     "How fast the right stick turns the camera: times the game's own speed, at any Camera sensitivity of the game's "
+     "Options. The mouse keeps its own sensitivity. Applies after a restart.", nullptr, true, true},
     {TAB_CONTROLS, "Invert camera X", &opts.invert_cam_x, 0, 1, 1, tx_onoff,
      "Inverts horizontal look (left/right) on the right analog stick.", nullptr, false, true},
     {TAB_CONTROLS, "Invert camera Y", &opts.invert_cam_y, 0, 1, 1, tx_onoff,
      "Inverts vertical look (up/down) on the right analog stick.", nullptr, false, true},
+    // (Triforce, after NX2navi's sprint button: host/oot_sprint.h)
+    {TAB_CONTROLS, "Sprint button", &opts.sprint_button, 0, 2, 1, tx_sprint,
+     "Link sprints from a button press, without rolling first. Left stick click: the game has no other use for it. B: sprints "
+     "only while Link moves, and puts the weapon away as usual otherwise (with the game's Swap Jump Controls B is the jump: "
+     "use the stick's click).", nullptr, false, true},
+    {TAB_CONTROLS, "Sprint mode", &opts.sprint_mode, 0, 1, 1, tx_sprint_mode,
+     "Toggle: a press starts the sprint and the next press, or stopping, ends it. Hold: Link sprints while the button is "
+     "held.", nullptr, false, true},
     {TAB_CONTROLS, "Stick dead zone", &opts.stick_dead_zone, 0, 5, 1, tx_stick_dead_zone,
      "How far a stick moves before the game sees it, on each axis. Lower for a precise stick, higher for one that drifts. "
      "The game's own dead zone still follows.", nullptr, false, true},

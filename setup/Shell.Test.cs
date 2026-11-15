@@ -67,7 +67,7 @@ sealed partial class Shell
             Show(FetchPage);
             stage.All(false);
             FetchUnknown(true);
-            FetchState("Gathering the stones", "Asking GitHub for the newest Triforce.", "Checking for updates");
+            FetchState("Gathering the stones", "Asking for the newest Triforce.", "Checking for updates");
             FetchCancel.Content = "Cancel";
             await Shot(dir, "02-gather-checking");
 
@@ -78,7 +78,7 @@ sealed partial class Shell
 
             stage.All(false);
             FetchUnknown(false);
-            FetchTitle.Text = "GitHub could not be reached";
+            FetchTitle.Text = "The Triforce site could not be reached";
             FetchNote.Text = "Check your internet connection, then try again.";
             FetchNote.Foreground = Brush("Bad");
             FetchStep.Text = "";

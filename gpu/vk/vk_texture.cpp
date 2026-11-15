@@ -48,7 +48,9 @@
 #include "host_shaders/bc_encoder_comp_spv.h"
 #include "bc_levels.h"
 #include "astc_bc_policy.h"
+#include "tex_detail.h"
 #include "vram_compact.h"
+#include "texture_gone.h"
 #include "keep_rendered.h"
 #include "target_overlap.h"
 #include "host_shaders/block_linear_unswizzle_2d_comp_spv.h"
@@ -174,6 +176,10 @@ struct KeyHash {
     }
 };
 std::unordered_map<Key, std::unique_ptr<Texture>, KeyHash> textures;
+// (Triforce, texture detail: the keys made whole whatever the card's detail level, for the session, and the textures asked
+// whole since the last sweep: texture_want_whole)
+std::unordered_set<Key, KeyHash> whole_keys;
+std::vector<Texture*> whole_pending;
 std::unordered_multimap<uint64_t, Texture*> by_gpu;
 uint64_t frame_no = 1;
 uint64_t total_bytes = 0;
@@ -1774,9 +1780,11 @@ bool texture_dirty(Texture& tex, uint32_t gen, Ranges& out, bool same_ok = false
 }
 
 uint64_t destroy_gen = 1;   // (bumped when textures go: what was resolved to them goes stale)
+texture_gone::Record gone_record;   // (which ones went: texture_destroyed_since, for a pointer kept across draws)
 
 void destroy_later(Texture& tex) {
     destroy_gen++;
+    gone_record.went(tex.id);
     Dead d{tex.last_value, tex.image, tex.allocation, {}, {}};
     if (tex.pool_key && tex.allocation && tex.sparse_chunks.empty() && pool_cap()) {   // (a render target's: to the pool, its views too)
         d.pool_key = tex.pool_key, d.view_map = std::move(tex.views), d.bytes = tex.bytes + tex.pad;
@@ -1851,6 +1859,7 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
     const uint32_t max_dim = std::max({x.width, x.height, x.depth});
     const uint32_t max_levels = 1 + (uint32_t)std::floor(std::log2((double)max_dim));
     x.levels = nvn_tex_is_linear(&d) ? 1 : std::clamp<uint32_t>(d.levels, 1, max_levels);
+    bool by_detail = false;   // (its top levels are left out by the card's texture detail alone: tex_detail.h)
     {   // huge textures leave out their top levels: wider than RX_VK_TEX_MAX_DIM (default 2048) once they would take
         // 64 MB, and down to RX_VK_TEX_MAX_MB (default 512) whatever their size (MKW's terrain material arrays are
         // 8192 x 8192 x 68 ASTC: 24 GB as RGBA8)
@@ -1888,6 +1897,30 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
                 logf("vk: texture %#llx %ux%ux%u x%u (NVN %#x, %llu MB): its %u top level(s) left out (%llu MB)",
                      (unsigned long long)t->gpu, x.width, x.height, x.depth, x.layers, d.format,
                      (unsigned long long)(bytes_at(0) >> 20), x.skip, (unsigned long long)(bytes_at(x.skip) >> 20));
+        }
+        // (texture detail, tex_detail.h: on a card the driver allows under 10 GB a material texture is made without its
+        // largest level, under 6 GB without two. Only a decoded ASTC texture the game samples: 2D or a 2D array, one
+        // sample, mipmapped, 256 texels or more each way, not one first met as a render target or a copy's destination.
+        // RX_VK_TEX_DETAIL=full|reduced|low says so on any card; read at the first texture)
+        // (nor one a shader reads by texel position or asks the size of: whole_keys, texture_want_whole)
+        const auto detail_level = [] { return texture_detail_level(); };
+        if (!as_target && astc && !x.sparse && x.type == VK_IMAGE_TYPE_2D && d.samples <= 1 &&
+            (d.target == NVN_TEXTURE_TARGET_2D || d.target == NVN_TEXTURE_TARGET_2D_ARRAY) && !whole_keys.count(key)) {
+            const uint32_t by = tex_detail::skip(detail_level(), x.width, x.height, x.levels);
+            if (by > x.skip) {
+                x.detail_skip = true;
+                static std::atomic<uint64_t> n{0}, whole{0}, kept{0};
+                by_detail = !x.skip;
+                const uint64_t c = ++n;
+                whole += bytes_at(0) >> 2, kept += bytes_at(by) >> 2;   // (texels)
+                x.skip = by;
+                if (c >= 64 && (c & (c - 1)) == 0)
+                    logf("vk: texture detail: %llu textures made without their largest level(s) so far, %llu M texels "
+                         "kept of %llu M", (unsigned long long)c, (unsigned long long)(kept.load() >> 20),
+                         (unsigned long long)(whole.load() >> 20));
+            }
+        }
+        if (x.skip) {
             x.width = std::max(1u, x.width >> x.skip), x.height = std::max(1u, x.height >> x.skip);
             x.depth = std::max(1u, x.depth >> x.skip);
             x.levels -= x.skip;
@@ -1939,7 +1972,8 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
             return false;
         }();
         static const bool rgba8_instead = getenv("RX_VK_UNEVEN_RGBA8") != nullptr;
-        const bool bc_candidate = astc && !(x.skip && x.layers == 1) && x.type == VK_IMAGE_TYPE_2D &&
+        // (one whose levels the texture detail left out is BC3 all the same: a copy into a level it lacks is left out)
+        const bool bc_candidate = astc && !(x.skip && x.layers == 1 && !by_detail) && x.type == VK_IMAGE_TYPE_2D &&
                                   x.samples == VK_SAMPLE_COUNT_1_BIT && x.width <= kBcDim && x.height <= kBcDim &&
                                   px * x.layers * 4 >= min_bytes;
         if (bc_candidate && uneven && amd_fix) {
@@ -2296,19 +2330,34 @@ unsigned view_layer(const nvn_view* v) {
     return v && v->set_layers ? v->min_layer : 0;
 }
 
-Texture* texture_get(const nvn_tex* t, bool for_sampling) {
-    PROF_HOT(PROF_TEXGET);
-    if (!t || !t->gpu || t->d.target == NVN_TEXTURE_TARGET_BUFFER) return nullptr;
-    const VkFormatInfo fi = vk_format(t->d.format);
-    if (fi.format == VK_FORMAT_UNDEFINED) {
-        static int seen[256];
-        if (t->d.format >= 0 && t->d.format < 256 && seen[t->d.format]++ < 2)
-            logf("vk: NVN format %#x has no Vulkan format: its textures are left out", t->d.format);
-        return nullptr;
-    }
-    int bw = 1, bh = 1;
-    const int bpb = nvn_block_size(t->d.format, &bw, &bh);
-    if (bpb <= 0) return nullptr;
+int texture_detail_level() {
+    static const int level = [] {
+        const int asked = tex_detail::parse(getenv("RX_VK_TEX_DETAIL"));
+        uint64_t used = 0, allowed = 0;
+        const bool known = vram_usage(&used, &allowed);
+        const bool integrated = dev.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
+        const int l = asked >= 0 ? asked : tex_detail::by_vram(known ? allowed : 0, integrated);
+        if (asked >= 0)
+            logf("vk: texture detail: %s (RX_VK_TEX_DETAIL)", tex_detail::name(l));
+        else if (l)
+            logf("vk: texture detail: %s, for the %llu MB of VRAM allowed here%s (full from %llu MB, low under %llu; "
+                 "RX_VK_TEX_DETAIL=full|reduced|low says otherwise)", tex_detail::name(l),
+                 (unsigned long long)(allowed >> 20), integrated ? " on an integrated GPU" : "",
+                 (unsigned long long)tex_detail::kFullMb, (unsigned long long)tex_detail::kLowMb);
+        return l;
+    }();
+    return level;
+}
+void texture_want_whole(Texture* tex) {
+    if (!tex || !tex->detail_skip || tex->whole_asked) return;
+    ParLock lk;
+    if (tex->whole_asked) return;
+    tex->whole_asked = true;
+    whole_pending.push_back(tex);
+}
+
+/// The image the game's texture has: its storage and what makes two textures over one storage different images
+static Key key_of(const nvn_tex* t, const VkFormatInfo& fi, int bpb) {
     Key k{};
     k.gpu = t->gpu;
     k.target = (uint32_t)t->d.target;
@@ -2324,6 +2373,23 @@ Texture* texture_get(const nvn_tex* t, bool for_sampling) {
     k.layout = nvn_tex_is_linear(&t->d) ? 0x80000000u | (t->d.stride ? t->d.stride : host->tex_linear_stride(&t->d))
                                         : t->L.tileH | t->L.tileD << 4;
     k.cls = format_class(fi.format, t->d.format, bpb, fi.astc);
+    return k;
+}
+
+Texture* texture_get(const nvn_tex* t, bool for_sampling) {
+    PROF_HOT(PROF_TEXGET);
+    if (!t || !t->gpu || t->d.target == NVN_TEXTURE_TARGET_BUFFER) return nullptr;
+    const VkFormatInfo fi = vk_format(t->d.format);
+    if (fi.format == VK_FORMAT_UNDEFINED) {
+        static int seen[256];
+        if (t->d.format >= 0 && t->d.format < 256 && seen[t->d.format]++ < 2)
+            logf("vk: NVN format %#x has no Vulkan format: its textures are left out", t->d.format);
+        return nullptr;
+    }
+    int bw = 1, bh = 1;
+    const int bpb = nvn_block_size(t->d.format, &bw, &bh);
+    if (bpb <= 0) return nullptr;
+    const Key k = key_of(t, fi, bpb);
     Texture* tex;
     auto it = textures.find(k);
     if (it == textures.end()) {
@@ -2347,6 +2413,14 @@ Texture* texture_get(const nvn_tex* t, bool for_sampling) {
 
 uint64_t texture_destroy_generation() {
     return destroy_gen;
+}
+
+uint64_t texture_destroyed_count() {
+    return gone_record.count();
+}
+
+bool texture_destroyed_since(uint32_t id, uint64_t since) {
+    return gone_record.gone_since(id, since);
 }
 
 uint32_t texture_epoch() {
@@ -4771,6 +4845,27 @@ void texture_sweep(uint64_t completed, bool sweep, uint64_t budget, uint64_t evi
         }
         run();
     }
+    // (Triforce, texture detail: the ones a shader reads by texel position go now, whatever their age, and their keys are
+    // made whole from here on: the next draw that binds one makes it again from the game's memory, every level. A pointer
+    // is only compared here: its texture may have gone since it was asked)
+    if (!whole_pending.empty()) {
+        static uint64_t n_whole, logged_at;
+        for (Texture* want : whole_pending)
+            for (auto& kv : textures)
+                if (kv.second.get() == want && want->detail_skip && want->whole_asked) {
+                    whole_keys.insert(kv.first);
+                    if (std::none_of(evict.begin(), evict.end(), [&](const Evict& e) { return e.tex == want; }))
+                        evict.push_back({want, false, false});
+                    n_whole++;
+                    break;
+                }
+        whole_pending.clear();
+        if (n_whole >= logged_at * 2 + 1) {
+            logged_at = n_whole;
+            logf("vk: texture detail: %llu textures kept whole so far: a shader reads them by texel position or asks "
+                 "their size", (unsigned long long)n_whole);
+        }
+    }
     for (const Evict& e : evict) {   // (and each one's bookkeeping and its end, as before)
         Texture* tex = e.tex;
         if (e.shifted) n_dead++, b_dead += tex->bytes, shifted_now++;
@@ -4862,8 +4957,38 @@ void texture_released(const nvn_tex* t) {
     if (!t) return;
     auto [a, b] = by_gpu.equal_range(t->gpu);
     for (auto it = a; it != b; ++it) it->second->let_go = std::max<uint64_t>(frame_no, 1);   // (texture_sweep: first to go while VRAM is short)
+    // (Triforce, a lab switch, off: RX_VK_RELEASE_OWN=1 finalizes only the image the released texture has, NX2navi's rule
+    // (there a release that finalized every image at the storage left terrain height maps drawn at height zero). Not
+    // the default: this renderer keeps an image for each size and format of a storage, and in the lab's first minute of
+    // play 32,767 images were spared this way, most of them at the start of one pool, render targets of other sizes
+    // that only such a release ever marks as let go. What that does to memory and to the write-backs before eviction
+    // has not been measured (the one run with it on was slow for another reason). The count of the others spared is
+    // logged as it doubles)
+    static const bool own_only = getenv("RX_VK_RELEASE_OWN") && atoi(getenv("RX_VK_RELEASE_OWN")) != 0;
+    const Texture* own = nullptr;
+    bool own_known = false;
+    if (own_only) {
+        const VkFormatInfo fi = vk_format(t->d.format);
+        int bw = 1, bh = 1;
+        const int bpb = fi.format != VK_FORMAT_UNDEFINED ? nvn_block_size(t->d.format, &bw, &bh) : 0;
+        if (bpb > 0) {
+            const auto it = textures.find(key_of(t, fi, bpb));
+            own_known = true, own = it == textures.end() ? nullptr : it->second.get();
+        }
+    }
     for (auto it = a; it != b; ++it)
         if (it->second->gpu_written && !it->second->released) {
+            if (own_known && it->second != own) {
+                static uint64_t spared, told_at;
+                if (++spared >= told_at * 2 + 1) {
+                    told_at = spared;
+                    logf("vk: a texture let go at %#llx (%ux%u NVN %#x): another texture's image there, #%u %ux%u NVN %#x, "
+                         "which the GPU drew, stays as it is (%llu such so far)", (unsigned long long)t->gpu, t->d.width,
+                         t->d.height, t->d.format, it->second->id, it->second->width, it->second->height,
+                         it->second->nvn_format, (unsigned long long)spared);
+                }
+                continue;
+            }
             it->second->released = true, it->second->release_gen = memory_generation();
             watch_tex(it->second, "finalized");
             static int logged;   // (a big one: the course maps' kind)

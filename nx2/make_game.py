@@ -1255,6 +1255,103 @@ def fetch_ngx_sdk(a):
         fail("NVIDIA's DLSS SDK could not be downloaded (%s). Check the connection and build again, or untick NVIDIA DLSS." % e)
 
 
+def fsr_script():
+    """scripts/fsr_sdk.py: AMD's two FSR 4 libraries; None where the builder carries no scripts/"""
+    import importlib.util
+    path = os.path.join(ROOT, "scripts", "fsr_sdk.py")
+    if not os.path.isfile(path):
+        return None
+    spec = importlib.util.spec_from_file_location("fsr_sdk", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def fsr_runtime_dir(work):
+    """Where AMD's FSR 4 libraries are kept between builds: HOOKSHOT_FSR_SDK, else the fsr-sdk folder of the work folder"""
+    return os.environ.get("HOOKSHOT_FSR_SDK", "") or os.path.join(work, "fsr-sdk")
+
+
+def fetch_fsr_runtime(work):
+    """(--fsr, Windows) AMD's two signed FSR 4 libraries into fsr_runtime_dir, only what is missing. A download that fails
+    is said and the build goes on: the game then does not offer AMD FSR 4 until a build gets them"""
+    fsr = fsr_script()
+    if LINUX or fsr is None:
+        return
+    print(fsr.NOTICE, flush=True)
+    try:
+        fsr.fetch(fsr_runtime_dir(work), say=lambda line: print(line, flush=True))
+    except (OSError, ValueError) as e:
+        print("AMD's FSR 4 libraries could not be downloaded (%s): the game will not offer AMD FSR 4. Build again with a "
+              "connection to get them." % e, flush=True)
+
+
+def place_fsr_runtime(out, work, wanted):
+    """(AMD FSR 4) a game built with it gets AMD's two libraries and their license text beside its exe, where
+    gpu/vk/vk_fsr4.cpp looks; a folder built with them before and without FSR 4 now loses them. Returns what was placed"""
+    fsr = fsr_script()
+    if LINUX or fsr is None:
+        return []
+    if not wanted or not fsr.complete(fsr_runtime_dir(work)):
+        if not wanted:
+            fsr.remove_runtime(out)
+        return []
+    placed = fsr.install_runtime(fsr_runtime_dir(work), out)
+    print("AMD FSR 4: %s (AMD's, MIT license)" % ", ".join(os.path.basename(p) for p in placed), flush=True)
+    return placed
+
+
+def streamline_script():
+    """scripts/streamline_sdk.py: NVIDIA's Streamline files for DLSS frame generation; None where the builder carries no
+    scripts/ (frame generation is then left out, DLSS itself is not)"""
+    import importlib.util
+    path = os.path.join(ROOT, "scripts", "streamline_sdk.py")
+    if not os.path.isfile(path):
+        return None
+    spec = importlib.util.spec_from_file_location("streamline_sdk", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def fetch_streamline_sdk(a):
+    """With --fetch-ngx-sdk on Windows (the NVIDIA DLSS tick, NVIDIA's licenses accepted): NVIDIA's Streamline files for DLSS
+    frame generation too, into HOOKSHOT_STREAMLINE_SDK (default: the streamline folder in HOOKSHOT_NGX_SDK), which
+    nx2/build.py then builds gpu/vk/vk_dlssg.cpp with. A download that fails leaves frame generation out of this build and
+    says so: the build goes on, with DLSS as before"""
+    if LINUX or not a.accept_nvidia_license:
+        return
+    sl = streamline_script()
+    if sl is None:
+        return
+    sdk = os.environ.get("HOOKSHOT_STREAMLINE_SDK", "") or os.path.join(os.environ.get("HOOKSHOT_NGX_SDK", ""), "streamline")
+    print(sl.NOTICE, flush=True)
+    try:
+        sl.fetch(sdk, say=lambda line: print(line, flush=True))
+    except (OSError, ValueError) as e:
+        print("NVIDIA's Streamline could not be downloaded (%s): this build has no DLSS frame generation. Build again "
+              "with a connection to get it." % e, flush=True)
+        os.environ.pop("HOOKSHOT_STREAMLINE_SDK", None)
+        return
+    os.environ["HOOKSHOT_STREAMLINE_SDK"] = sdk
+
+
+def place_dlssg_runtime(out):
+    """(NVIDIA DLSS frame generation) a game built with NVIDIA's Streamline (HOOKSHOT_STREAMLINE_SDK, as nx2/build.py takes it)
+    gets Streamline's DLLs, nvngx_dlssg.dll and their license texts in its dlssg folder, where gpu/vk/vk_dlssg.cpp looks. A
+    folder built with them before and without them now loses them. Returns the folder, or None"""
+    sl = streamline_script()
+    if sl is None:
+        return None
+    sdk = os.environ.get("HOOKSHOT_STREAMLINE_SDK", "")
+    if LINUX or not sl.complete(sdk):
+        sl.remove_runtime(out)
+        return None
+    dst = sl.install_runtime(sdk, out)
+    print("NVIDIA DLSS frame generation: %s (NVIDIA's, under NVIDIA's licenses: never share this game folder)" % dst, flush=True)
+    return dst
+
+
 def ngx_built():
     """This build has NVIDIA DLSS: HOOKSHOT_NGX_SDK holds this platform's library (what nx2/build.py takes)"""
     sdk = os.environ.get("HOOKSHOT_NGX_SDK", "")
@@ -1350,7 +1447,8 @@ def parse_args():
     p.add_argument("--fetch-ngx-sdk", action="store_true", help="download NVIDIA's DLSS SDK into HOOKSHOT_NGX_SDK before the build")
     p.add_argument("--accept-nvidia-license", action="store_true", help="NVIDIA's DLSS SDK license, accepted (with --fetch-ngx-sdk)")
     # (AMD FSR 4, off unless asked: nothing is downloaded. gpu/vk/vk_fsr4.cpp)
-    p.add_argument("--fsr", action="store_true", help="build with AMD FSR 4 (AMD's DLLs are not included: see the readme)")
+    p.add_argument("--fsr", action="store_true", help="build with AMD FSR 4; on Windows AMD's two libraries are downloaded "
+                   "from AMD's repository and put beside the game (scripts/fsr_sdk.py)")
     p.add_argument("--no-fsr", action="store_true", help="with --update: build without AMD FSR 4 even if the folder had it")
     # (RenoDX's HDR, in every build since 11-13: its shaders and the Slang compiler are downloaded and compiled here.
     # scripts/renodx_shaders.py, gpu/vk/vk_renodx.cpp)
@@ -1423,9 +1521,11 @@ def main(a=None):
     drop_stale_objects(work)
     if getattr(a, "fetch_ngx_sdk", False):
         fetch_ngx_sdk(a)
+        fetch_streamline_sdk(a)   # (DLSS frame generation's files, with the same tick)
     # (AMD FSR 4: the build's switch for nx2/build.py, and the folder's mark for the next --update)
     if fsr_wanted(a, out):
         os.environ["HOOKSHOT_FSR"] = "1"
+        fetch_fsr_runtime(work)   # (AMD's two libraries, for the game folder: place_fsr_runtime at the end)
         open(os.path.join(out, FSR_MARK), "w").close()
         if os.environ.get("HOOKSHOT_VK_PREBUILT"):   # (the AppImage's back end, built without FSR 4)
             print("--fsr: this build uses the prebuilt Vulkan back end (HOOKSHOT_VK_PREBUILT), which has no AMD FSR 4: the "
@@ -1709,6 +1809,8 @@ def main(a=None):
                 pass
     drop_old_program(out)
     place_ngx_runtime(out)
+    place_dlssg_runtime(out)
+    place_fsr_runtime(out, work, os.environ.get("HOOKSHOT_FSR") == "1")
     # every shader of the game, for its first start to translate (gpu/vk/vk_shader.cpp seed_open). Without it the game still runs, compiling them
     # as it meets them: not worth stopping a finished build for
     if run(shader_census_cmd(romfs, os.path.join(out, "triforce_shaders.bin")), check=False, output=sys.stderr):

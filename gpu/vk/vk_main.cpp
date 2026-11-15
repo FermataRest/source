@@ -1,6 +1,7 @@
 // The Vulkan back end's start: vulkan-1.dll, the instance, the device (Vulkan 1.3 and the extensions the NVN replay
 // wants where the GPU has them: mesh shaders, host memory import, graphics pipeline libraries), the window's
 // swapchain, and the rx_* table (vk_api.h). The NVN replay itself is vk_replay.cpp.
+#include "vk_dlssg.h"
 #include "vk_paths.h"
 #include "vk_loader.h"
 
@@ -37,6 +38,9 @@ VKX_DEVICE3(VKX_DEFINE)
 #undef VKX_DEFINE
 
 static PFN_vkGetInstanceProcAddr get_instance_proc;
+// (Triforce, NVIDIA DLSS frame generation, vk_dlssg.cpp: while Streamline is up, get_instance_proc is its interposer's,
+// so the instance, the device and every function of both are fetched through it; this is the loader's own)
+static PFN_vkGetInstanceProcAddr loader_instance_proc;
 
 bool load_global() {
 #ifdef _WIN32   // (hookshot: the loader from System32 only, not from the current folder or PATH)
@@ -47,6 +51,8 @@ bool load_global() {
     if (!m) return false;
     get_instance_proc = (PFN_vkGetInstanceProcAddr)(void*)GetProcAddress(m, "vkGetInstanceProcAddr");
     if (!get_instance_proc) return false;
+    loader_instance_proc = get_instance_proc;
+    if (const PFN_vkGetInstanceProcAddr interposer = mkwvk::dlssg::early()) get_instance_proc = interposer;
 #define VKX_LOAD(f) f = (PFN_##f)get_instance_proc(nullptr, #f);
     VKX_GLOBAL(VKX_LOAD)
 #undef VKX_LOAD
@@ -57,6 +63,12 @@ void load_instance(VkInstance instance) {
 #define VKX_LOAD(f) f = (PFN_##f)get_instance_proc(instance, #f);
     VKX_INSTANCE(VKX_LOAD)
 #undef VKX_LOAD
+}
+/// (Triforce) Streamline is given up for this run before the device is made: the instance's functions from the loader again
+void use_loader(VkInstance instance) {
+    if (!loader_instance_proc || get_instance_proc == loader_instance_proc) return;
+    get_instance_proc = loader_instance_proc;
+    load_instance(instance);
 }
 void load_device(VkDevice device) {
 #define VKX_LOAD(f) f = (PFN_##f)vkGetDeviceProcAddr(device, #f);
@@ -260,7 +272,14 @@ bool create_device() {
     dlss_device_extensions(want, exts);   // (hookshot: NVIDIA DLSS's, vk_dlss.cpp)
     bool fsr_descriptor_buffer = false;   // (hookshot, linux: only with a Vulkan FSR 4 library beside the game, vk_fsr4.cpp)
     if (fsr4_wants_descriptor_buffer()) optional(VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME, fsr_descriptor_buffer);
-    reflex_device_extensions(want, exts);   // (hookshot: NVIDIA Reflex's, vk_reflex.cpp)
+    // (Triforce, NVIDIA DLSS frame generation: Streamline's device asks for Reflex's extensions itself, and the renderer's
+    // own Reflex stays off in such a run; another vendor's card is made by the loader, without it)
+    if (dlssg::early() && dev.props.vendorID != 0x10de) {
+        dlssg::gave_up("the graphics card in use is not an NVIDIA card");
+        vkx::use_loader(dev.instance);
+    }
+    if (dlssg::early()) dlssg::device_extensions(want, exts);
+    else reflex_device_extensions(want, exts);   // (hookshot: NVIDIA Reflex's, vk_reflex.cpp)
     antilag_device_extensions(want, exts);   // (hookshot: AMD Anti-Lag 2's, vk_antilag.cpp)
 
     // the queue: one family for graphics, compute and transfer
@@ -470,8 +489,16 @@ bool create_device() {
     ci.pQueueCreateInfos = qs;
     ci.enabledExtensionCount = (uint32_t)want.size();
     ci.ppEnabledExtensionNames = want.data();
-    if (vkCreateDevice(dev.physical, &ci, nullptr, &dev.device) != VK_SUCCESS) {
-        logf("vk: vkCreateDevice failed");
+    VkResult made = vkCreateDevice(dev.physical, &ci, nullptr, &dev.device);
+    if (made != VK_SUCCESS && dlssg::early()) {   // (Streamline's refused it: the loader's, without frame generation)
+        char why[96];
+        snprintf(why, sizeof why, "Streamline could not make the device (VkResult %d)", (int)made);
+        dlssg::gave_up(why);
+        vkx::use_loader(dev.instance);
+        made = vkCreateDevice(dev.physical, &ci, nullptr, &dev.device);
+    }
+    if (made != VK_SUCCESS) {
+        logf("vk: vkCreateDevice failed (VkResult %d)", (int)made);
         return false;
     }
 
@@ -481,6 +508,10 @@ bool create_device() {
     dev.present_queue = VK_NULL_HANDLE;
     dev.present_family = dev.queue_family;
     if (compute_family != UINT32_MAX) vkGetDeviceQueue(dev.device, compute_family, 0, &dev.present_queue), dev.present_family = compute_family;
+    dlssg::device_ready(dev.physical, dev.device);
+    // (with DLSS frame generation the presents stay on the replay's queue: the generated frames are Streamline's work
+    // inside the present, on that queue)
+    if (dlssg::active()) dev.present_queue = VK_NULL_HANDLE, dev.present_family = dev.queue_family;
     if (dev.buffer_marker) buffer_markers_init();
     coopmat_init();
     reflex_device_created();
@@ -700,6 +731,7 @@ bool create_swapchain(uint32_t width, uint32_t height) {
          mode == VK_PRESENT_MODE_MAILBOX_KHR ? "mailbox" : mode == VK_PRESENT_MODE_IMMEDIATE_KHR ? "immediate" : "fifo");
     swap_views_make(ci.imageUsage, mutable_view ? view_formats[1] : fmt.format);
     reflex_swapchain_created(sc);   // (NVIDIA Reflex: its sleep mode on the new swapchain)
+    dlssg::swapchain_created();     // (Triforce, DLSS frame generation: Streamline's Reflex mode is the swapchain's too)
     return true;
 }
 

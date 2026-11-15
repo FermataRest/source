@@ -24,7 +24,7 @@ struct Options {
     int rdx_exposure = 100;   // percent, 0 to 200
     int rdx_highlights = 50, rdx_shadows = 50, rdx_contrast = 50, rdx_saturation = 50;   // 0 to 100, 50 neutral
     int rdx_bloom = 50;       // 0 to 100, 50 the game's
-    int fps_cap = 0;      // (hookshot) Frame rate cap: 0 60 (the console's), 90, 120, 144, 165, 240 (host/nn_vi.c reads frame_rate_cap= at the start)
+    int fps_cap = 0;      // (hookshot) Frame rate cap: 0 60 (the console's), 90, 120, 144, 165, 240; -1 45, -2 40, -3 30 (host/nn_vi.c reads frame_rate_cap= at the start)
     int resolution = 0;   // the 3D's (Render resolution): 0 Auto (the game's dynamic resolution), else a share of the output,
                           // 1..6 = 100%, 75%, 67%, 50%, 58%, 33% (upscaler_rows.h; nx2/oot_patches.py)
     int output_res = 0;   // the game's whole frame, docked: 0 its 2048x1152, 1 2560x1440, 2 3840x2160, 3 1920x1080, 4 5120x1440, 5 5120x2880; read once, at the start (host/nn_applet.c)
@@ -54,6 +54,7 @@ struct Options {
     int mouse_invert = 0; // the mouse's up and down swapped
     int text_speed = 0;   // how fast dialogue prints: 0 the game's, 1 2x, 2 4x, 3 instant (host/nn_vi.c, nx2/oot_patches.py; HOS_TEXT_SPEED)
     int invert_cam_x = 0; // right-stick camera horizontal inversion: 0 normal, 1 inverted
+    int camera_speed = 100;   // (Triforce) the right stick's camera speed, percent of the game's own (host/prompts.c build_camera)
     int invert_cam_y = 0; // right-stick camera vertical inversion: 0 normal, 1 inverted
     int rumble = 100;     // the controllers' rumble in percent of the game's: 0 Off, 25 to 150 (host/pad_sdl.c)
     int stick_dead_zone = 0;  // a stick axis below it is 0: 0 XInput's 7849 (~24%), 1..5 5% to 30% (host/nn_hid.c)
@@ -72,6 +73,11 @@ struct Options {
     int vram_mb = 0;      // dynamic texture cache budget limit in MB
     int mirror_mb = 0;    // staging mirror limit in MB
     int audio_output = 0; // (hookshot) the speakers the game mixes for: 0 Auto (the default output's), 1 Stereo, 2 5.1; read once, at the start (host/nn_audio.c; HOS_AUDIO_CHANNELS)
+    int volume = 100;  // (Triforce) Master volume, percent of the game's own (host/nn_audio.c render_frame; master_volume= in the ini)
+    int dlssg = 0;           // (Triforce) NVIDIA DLSS frame generation: 0 off, 1 2x, 2 3x, 3 4x; read at the start (vk_dlssg.cpp, dlss_frame_generation=)
+    int wide_hud = 0;        // (Triforce) with Ultrawide: 0 the HUD in the middle 16:9, 1 its corner pieces at the screen's edges (host/oot_wide_hud.c)
+    int sprint_button = 0;   // (Triforce) the sprint button: 0 off, 1 the left stick's click, 2 B (host/oot_sprint.h)
+    int sprint_mode = 0;     // 0 toggle (a press starts it, the next ends it), 1 hold
     int discord = 1;   // (hookshot) the Discord status (host/discord_rpc.c): 1 on, shown while a Discord client runs on this PC
     int debug_tools = 0;   // (hookshot) the Debug tab's tools (#785: flight, free camera, teleport, inventory): 0 off; HOS_OOT_CHEATS=1 also turns them on
     int mic = 1;          // (hookshot) the ocarina's microphone: 0 Off, 1 the system's default, 2.. a device as host->mic_name lists it (host/nn_audio_in.c)

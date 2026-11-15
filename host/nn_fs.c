@@ -1,6 +1,7 @@
 /* nn::fs: mounts map to host folders.
      rom:      the game's RomFS (extracted by tools/nx.py romfs), read-only
-     save:     <user>/save/<uid>     (MountSaveData / MountSaveDataReadOnly)
+     save:     <user>/save/<uid>     (MountSaveData / MountSaveDataReadOnly); MountSaveData's root is a working copy of it,
+               <user>/save-tx/<uid>/work, which Commit makes the save as a transaction (save_tx.h)
      cache:    <user>/cache/<index>  (MountCacheStorage)
      temp:     <user>/temp           (MountTemporaryStorage)
    hos_romfs_dir and hos_user_dir are set by hos_main.c. Reads are positional (ReadFile with an offset), so any number
@@ -257,10 +258,82 @@ HLE(_ZN2nn2fs18IsSaveDataExistingENS_13ApplicationIdERKNS_7account3UidE) {
              (unsigned long long)G64(ARG(1)));
     RET(GetFileAttributesA(root) != INVALID_FILE_ATTRIBUTES);
 }
+/* (triforce) The save as a transaction (save_tx.h): MountSaveData mounts a working copy of the save, and Commit makes that
+   copy the save, whole or not at all, with the saves it replaces kept as backups. Commit's first part (the copy of the
+   working copy as it is then) runs on the game's thread; the second (written out to the disk, put in place, the backup) on a
+   thread of its own, which the next Commit, a mount of the save and the game's end wait for. */
+#include "save_tx.h"
+typedef struct { char name[32]; char uid[40]; SaveTxPaths p; } TxMount;
+static TxMount tx_mounts[4];
+static int ntx;
+static SRWLOCK tx_lock = SRWLOCK_INIT;   /* (tx_mounts, tx_thread and every step of a transaction) */
+static HANDLE tx_thread;                 /* (the thread finishing the last Commit, or NULL) */
+static SaveTxPaths tx_finish_paths;
+
+static DWORD WINAPI tx_finish_main(LPVOID arg) {
+    (void)arg;
+    char backup[HOS_FS_PATH];
+    const ULONGLONG t0 = GetTickCount64();
+    const int r = save_tx_finish(&tx_finish_paths, backup, sizeof backup);
+    if (r != 1) hos_log("fs: the save could not be committed as a transaction: its files were %s", r == 0 ? "copied over the save's instead" : "NOT saved (the disk?)");
+    else if (backup[0]) hos_log("fs: save committed (%llu ms on its thread); the save before it is kept in %s", (unsigned long long)(GetTickCount64() - t0), backup);
+    else if (hos_trace || getenv("HOS_FS_TRACE")) hos_log("fs: save committed (%llu ms on its thread)", (unsigned long long)(GetTickCount64() - t0));
+    return 0;
+}
+/* (with tx_lock held) the thread of the last Commit has ended */
+static void tx_wait_locked(void) {
+    if (!tx_thread) return;
+    WaitForSingleObject(tx_thread, INFINITE);
+    CloseHandle(tx_thread);
+    tx_thread = NULL;
+}
+/* The game ends (host/hos_relaunch.c, and at exit): a Commit still on its thread is finished first */
+void hos_fs_save_finish(void) {
+    AcquireSRWLockExclusive(&tx_lock);
+    tx_wait_locked();
+    ReleaseSRWLockExclusive(&tx_lock);
+}
+/* MountSaveData's root for uid: the working copy (1, in root), or 0: the save folder itself, as before */
+static int tx_mount(const char *name, const char *uid, char *root, size_t cap) {
+    if (!save_tx_enabled()) return 0;
+    static int at_exit;
+    int ok = 0;
+    char note[256] = "";
+    AcquireSRWLockExclusive(&tx_lock);
+    if (!at_exit) at_exit = 1, atexit(hos_fs_save_finish);
+    tx_wait_locked();
+    int i;
+    for (i = 0; i < ntx && strcmp(tx_mounts[i].uid, uid); i++) {}
+    if (i < ntx) {   /* (mounted already under another name: the same working copy, no second recovery under the game's files) */
+        if (ntx < 4) {
+            tx_mounts[ntx] = tx_mounts[i];
+            snprintf(tx_mounts[ntx].name, sizeof tx_mounts[ntx].name, "%s", name);
+            snprintf(root, cap, "%s", tx_mounts[ntx++].p.work);
+            ok = 1;
+        }
+    } else if (ntx < 4) {
+        TxMount *m = &tx_mounts[ntx];
+        save_tx_paths(&m->p, hos_user_dir, uid);
+        const int away = hos_vcore_away();
+        ok = save_tx_mount(&m->p, note, sizeof note);
+        if (away) hos_vcore_back();
+        if (ok) {
+            snprintf(m->name, sizeof m->name, "%s", name);
+            snprintf(m->uid, sizeof m->uid, "%s", uid);
+            snprintf(root, cap, "%s", m->p.work);
+            ntx++;
+        }
+    }
+    ReleaseSRWLockExclusive(&tx_lock);
+    if (note[0]) hos_log("fs: save: %s", note);
+    if (!ok) hos_log("fs: save: no working copy could be made: the save folder itself is mounted, and saves are written in place");
+    return ok;
+}
 /* MountSaveData(char const*, account::Uid const&) */
 HLE(_ZN2nn2fs13MountSaveDataEPKcRKNS_7account3UidE) {
-    char sub[64];
+    char sub[64], root[HOS_FS_PATH];
     snprintf(sub, sizeof sub, "save\\%016llx%016llx", (unsigned long long)G64(ARG(1) + 8), (unsigned long long)G64(ARG(1)));
+    if (tx_mount(gstr(ARG(0)), sub + 5, root, sizeof root)) { RET(mount(gstr(ARG(0)), root, 1) ? 0 : R_NOT_MOUNTED); return; }
     RET(user_mount(gstr(ARG(0)), sub) ? 0 : R_NOT_MOUNTED);
 }
 /* MountSaveDataReadOnly(char const*, ApplicationId, account::Uid const&) */
@@ -307,8 +380,36 @@ HLE(_ZN2nn2fs7UnmountEPKc) {
     for (int i = 0; i < nmounts; i++)
         if (!strcmp(mounts[i].name, gstr(ARG(0)))) { mounts[i] = mounts[--nmounts]; break; }
     ReleaseSRWLockExclusive(&mount_lock);
+    AcquireSRWLockExclusive(&tx_lock);   /* (the save's working copy stays on the disk until its next mount makes it again) */
+    for (int i = 0; i < ntx; i++)
+        if (!strcmp(tx_mounts[i].name, gstr(ARG(0)))) { tx_mounts[i] = tx_mounts[--ntx]; break; }
+    ReleaseSRWLockExclusive(&tx_lock);
 }
-HLE(_ZN2nn2fs6CommitEPKc) { RET(0); }
+/* nn::fs::Commit(char const*): the save mount's working copy becomes the save (save_tx.h); any other mount, and a save mounted
+   without a working copy, as before: nothing to do, its files are where they belong */
+HLE(_ZN2nn2fs6CommitEPKc) {
+    const char *name = gstr(ARG(0));
+    AcquireSRWLockExclusive(&tx_lock);
+    int i;
+    for (i = 0; i < ntx && strcmp(tx_mounts[i].name, name); i++) {}
+    if (i < ntx) {
+        const int away = hos_vcore_away();
+        const ULONGLONG t0 = GetTickCount64();
+        tx_wait_locked();   /* (the Commit before this one: its staging folder is this one's) */
+        const int staged = save_tx_stage(&tx_mounts[i].p);
+        if (staged == 1) {
+            tx_finish_paths = tx_mounts[i].p;
+            tx_thread = CreateThread(NULL, 0, tx_finish_main, NULL, 0, NULL);
+            if (!tx_thread) tx_finish_main(NULL);   /* (no thread: finished here) */
+        } else {
+            hos_log("fs: the save could not be staged for its commit: its files were %s", staged == 0 ? "copied over the save's instead" : "NOT saved (the disk?)");
+        }
+        if (hos_trace || getenv("HOS_FS_TRACE")) hos_log("fs: Commit(%s): staged in %llu ms", name, (unsigned long long)(GetTickCount64() - t0));
+        if (away) hos_vcore_back();
+    }
+    ReleaseSRWLockExclusive(&tx_lock);
+    RET(0);
+}
 HLE(_ZN2nn2fs26SetPriorityOnCurrentThreadENS0_8PriorityE) {}
 
 /* ---- files ---------------------------------------------------------------------------------------------------- */

@@ -130,8 +130,8 @@ static void discard_pages(uint64_t addr, uint64_t size) {
     if (keep < 0) keep = getenv("HOS_KEEP_FREED_PAGES") != NULL;
     if (hi <= lo || keep) return;
 #if defined(_WIN32) && !defined(__EMSCRIPTEN__)
-    extern int hos_large_pages;   /* (hos_main.c: large pages cannot be discarded) */
-    if (hos_large_pages) return;
+    extern uint64_t hos_large_lo, hos_large_hi;   /* (hos_main.c: large pages cannot be discarded) */
+    if (hos_large_hi && lo < hos_large_hi && hi > hos_large_lo) return;
     typedef DWORD(WINAPI * DiscardFn)(PVOID, SIZE_T);
     static DiscardFn discard;
     static int looked;

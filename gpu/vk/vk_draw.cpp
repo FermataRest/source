@@ -728,12 +728,34 @@ void pcache_init() {
     std::string dir(exe, n);
     dir = dir.substr(0, dir.find_last_of("\\/") + 1);
     pcache_path = dir + "mkw_vk_pipelines.bin";
+    // (Triforce, 11-14) The file is kept for one set of translated shaders: the ones named beside it (<file>.for, the programs'
+    // stamp). The driver's data only ever grows: every update that changes the translator (and a Setup build after a lab one:
+    // another C++ library, other SPIR-V) added its ~650 MB of pipelines to the pipelines of shaders that no longer exist, and
+    // the whole file is read into memory at every start and held by the driver. A player's file after six updates: 4.1 GB, on a
+    // 32 GB PC whose log says "RAM short" all session (1.2-1.5 GB available, private 31.9-33.8 GB); the lab's: 3.9 GB, about
+    // that much more RAM in use at the title than with a fresh file (647 MB). A file for other shaders, or with no name beside
+    // it, is not read: the cache starts empty, the driver's own cache serves the start's pipelines, and the first save writes
+    // the new file over the old one. RX_VK_PCACHE_KEEP_OLD=1: read whatever is there, as before
+    char pcache_for[20];
+    snprintf(pcache_for, sizeof pcache_for, "%016llx", (unsigned long long)program_cache_stamp());
+    bool pcache_same = getenv("RX_VK_PCACHE_KEEP_OLD") != nullptr;
+    if (!pcache_same) {
+        if (FILE* f = fopen((pcache_path + ".for").c_str(), "rb")) {
+            char had[20]{};
+            pcache_same = fread(had, 1, 16, f) == 16 && !memcmp(had, pcache_for, 16);
+            fclose(f);
+        }
+    }
     std::vector<uint8_t> data;
     if (FILE* f = fopen(pcache_path.c_str(), "rb")) {
         _fseeki64(f, 0, SEEK_END);
         const int64_t sz = _ftelli64(f);
         _fseeki64(f, 0, SEEK_SET);
-        if (sz > 32) {
+        if (!pcache_same) {
+            if (sz > 32)
+                logf("vk: pipeline cache %s (%lld MB) is for other shaders than these, or older than this rule: not read; a new "
+                     "one is made (RX_VK_PCACHE_KEEP_OLD=1: read)", pcache_path.c_str(), (long long)(sz >> 20));
+        } else if (sz > 32) {
             data.resize((size_t)sz);
             if (fread(data.data(), 1, data.size(), f) != data.size()) data.clear();
         }
@@ -3122,6 +3144,10 @@ void build_descriptors(const NvnState& s, const Program& p) {
                                           : VK_NULL_HANDLE;
                 upload_defer_ok = false;
                 if (pre_retarget_on && view && tex == pre_retarget.from) view = pre_retarget.to_view;   // (the engine's picture)
+                // (Triforce, texture detail: a texture with levels left out, at a binding the stage reads by texel
+                // position or asks the size of, is made whole: vk_texture.cpp texture_want_whole)
+                if (tex && tex->detail_skip && !tex->whole_asked && shader_reads_exact(st.module, w.dstBinding))
+                    texture_want_whole(tex);
                 if (dump_on()) dump_input('t', (uint32_t)(dw().imgs.size() - 0), handle, view ? tex : nullptr);
                 if (view && tex && trace_tex_wanted(tex)) trace_tex_hit = tex;
                 if (log_img_wanted(p.key)) {
@@ -8149,6 +8175,32 @@ void predict_plan_ensure() {
          std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
 }
 
+// (Triforce, 11-14) The builder stays out of the game in play. It ran on its 1 to 3 idle-priority threads the whole session,
+// and idle priority did not keep it out of the frame: each build is tens of ms inside the driver's compiler, which the replay's
+// own calls into the driver wait behind, and the PC's memory fills with what the driver keeps of them. A player's session of
+// v0.3.6 (RTX 4070 SUPER, 13700K, a ~2,850-draw scene): 55-64 fps before the builder began, 41-47 with it running (8 s of
+// compiling per 2.6 s of play), the GPU's time a frame 12-15 -> 16-17 ms, the game's private memory 31.9 -> 33.8 GB of 32.
+// On a driver that takes seconds a pipeline (AMD) the builder would never have ended. Now it builds while the frame shown is
+// a light one (the title, the menus, the pause and map screens, a loading screen: under RX_VK_PREDICT_BG_PLAY_DRAWS draws,
+// 600) or none is shown, and rests while the game is in play. RX_VK_PREDICT_BG_PLAY=1: one thread goes on in play, resting
+// three times as long as each program took (a quarter of a thread); =2: all of them, as v0.3.6
+std::atomic<int> frame_draws_last{0};
+std::atomic<int64_t> frame_shown_ms{0};
+namespace {
+int64_t bg_now_ms() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+bool bg_game_in_play() {
+    static const int play_draws = getenv("RX_VK_PREDICT_BG_PLAY_DRAWS") ? atoi(getenv("RX_VK_PREDICT_BG_PLAY_DRAWS")) : 600;
+    return frame_draws_last.load(std::memory_order_relaxed) >= play_draws &&
+           bg_now_ms() - frame_shown_ms.load(std::memory_order_relaxed) < 500;
+}
+} // namespace
+void frame_shown_note(int draws) {
+    frame_draws_last.store(draws, std::memory_order_relaxed);
+    frame_shown_ms.store(bg_now_ms(), std::memory_order_relaxed);
+}
+
 /// (Triforce) The predicted pipelines predict_run did not get to, built behind the game: see above
 void predict_background() {
     static std::atomic<bool> started{false};
@@ -8183,15 +8235,28 @@ void predict_background() {
         const unsigned cpus = std::max(1u, std::thread::hardware_concurrency());
         static const unsigned nthreads = getenv("RX_VK_PREDICT_BG_THREADS")
             ? (unsigned)std::clamp(atoi(getenv("RX_VK_PREDICT_BG_THREADS")), 1, 32) : std::clamp(cpus / 6, 1u, 3u);
+        static const int in_play = getenv("RX_VK_PREDICT_BG_PLAY") ? std::clamp(atoi(getenv("RX_VK_PREDICT_BG_PLAY")), 0, 2) : 0;
         logf("vk: predicted pipelines: %zu programs' are still to build for this driver (%zu were built by earlier starts): built "
-             "behind the game on %u idle thread(s) (RX_VK_PREDICT_BG=0: not)", keys.size(), had.size(), nthreads);
+             "behind the game on %u idle thread(s) while the frame shown is a light one (the title, the menus, a loading screen)%s "
+             "(RX_VK_PREDICT_BG=0: not)", keys.size(), had.size(), nthreads,
+             in_play == 2 ? " and in play too (RX_VK_PREDICT_BG_PLAY=2)" : in_play == 1 ? ", and on a quarter of one in play" : "");
         std::atomic<size_t> next{0}, made{0}, programs_done{0};
-        const auto worker = [&] {
+        std::atomic<int64_t> rested_ms{0};
+        const auto worker = [&](unsigned id) {
             ub_thread_off();   // (a background thread: see ub_thread_off)
             SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_IDLE);
             driver_cache_only = true;
+            int64_t rest_until = 0;   // (in play, RX_VK_PREDICT_BG_PLAY=1: this thread's rest after a program)
             for (;;) {
                 if (prepare_stopped()) return;
+                // (the game in play: see above. Looked at before each program; one already inside the driver finishes)
+                if (in_play != 2) {
+                    const int64_t r0 = bg_now_ms();
+                    while (!prepare_stopped() && bg_game_in_play() && !(in_play == 1 && id == 0 && bg_now_ms() >= rest_until)) Sleep(50);
+                    if (prepare_stopped()) return;
+                    if (id == 0) rested_ms += bg_now_ms() - r0;
+                }
+                const int64_t b0 = bg_now_ms();
                 const size_t i = next++;
                 if (i >= keys.size()) return;
                 const auto& list = by_program[keys[i]];
@@ -8203,17 +8268,20 @@ void predict_background() {
                                 vkDestroyPipeline(dev.device, pl, nullptr), made++;
                 });
                 predicted_done(pstamp, keys[i]);
+                if (in_play == 1 && bg_game_in_play()) rest_until = bg_now_ms() + 3 * (bg_now_ms() - b0);
                 if (++programs_done % 2000 == 0)
-                    logf("vk: predicted pipelines: %zu of %zu programs built behind the game so far", programs_done.load(), keys.size());
+                    logf("vk: predicted pipelines: %zu of %zu programs built behind the game so far (rested %.0f s for the game in play)",
+                         programs_done.load(), keys.size(), rested_ms.load() / 1000.0);
             }
         };
         std::vector<std::thread> threads;
-        for (unsigned i = 0; i < nthreads; i++) threads.emplace_back(worker);
+        for (unsigned i = 0; i < nthreads; i++) threads.emplace_back(worker, i);
         for (std::thread& t : threads) t.join();
         const bool all = programs_done.load() >= keys.size() && !prepare_stopped();
         if (all) predicted_done(pstamp, kPredictedAll);
-        logf("vk: predicted pipelines: %zu built behind the game for %zu programs in %.0f s%s", made.load(), programs_done.load(),
-             std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(),
+        logf("vk: predicted pipelines: %zu built behind the game for %zu programs in %.0f s, %.0f s of it rested for the game in "
+             "play%s", made.load(), programs_done.load(),
+             std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(), rested_ms.load() / 1000.0,
              all ? ": every predicted program is built for this driver now" : " (stopped: the rest at the next start)");
     }).detach();
 }
@@ -8786,12 +8854,18 @@ void pipeline_cache_save(bool force) {
         while (busy.load()) Sleep(1);   // (the one under way, then this one)
         busy = true;
     }
-    auto save = [] {
+    auto save = [force] {
         struct Done { ~Done() { busy = false; } } done;
         try {
             size_t n = 0;
             // (the size last read or written: nothing new, not fetched nor written again; see pcache_saved_size)
             if (vkGetPipelineCacheData(dev.device, pcache, &n, nullptr) == VK_SUCCESS && n && n != pcache_saved_size) {
+                // (Triforce, 11-14) In play the file is written again only once the cache has grown by RX_VK_PCACHE_PLAY_MB (64):
+                // every 32 new pipelines had the whole cache fetched into memory and the whole file written (650 MB when fresh,
+                // 4 GB at its worst), a commit spike and seconds of disk load in the middle of play, for a few hundred KB new.
+                // What play builds is in the driver's own cache at once, and the save at the game's close takes all of it
+                static const size_t play_grow = (size_t)(getenv("RX_VK_PCACHE_PLAY_MB") ? std::max(0ll, atoll(getenv("RX_VK_PCACHE_PLAY_MB"))) : 64) << 20;
+                if (!force && pcache_saved_size > (1u << 20) && n < pcache_saved_size + play_grow) return;
                 std::vector<uint8_t> data(n);
                 if (vkGetPipelineCacheData(dev.device, pcache, &n, data.data()) == VK_SUCCESS) {
                     const std::string tmp = pcache_path + ".tmp";
@@ -8801,6 +8875,13 @@ void pipeline_cache_save(bool force) {
                         // (only a file in place counts as saved: a failed write is tried again at the next save)
                         if (ok && MoveFileExA(tmp.c_str(), pcache_path.c_str(), MOVEFILE_REPLACE_EXISTING)) {
                             pcache_saved_size = n;
+                            // (the shaders it is for, beside it: pcache_init reads the file only for these. Not when the old
+                            // file was read whatever it was for, RX_VK_PCACHE_KEEP_OLD: that would name the old data as these')
+                            if (FILE* s = getenv("RX_VK_PCACHE_KEEP_OLD") ? nullptr : fopen((pcache_path + ".for").c_str(), "wb")) {
+                                char want[20];
+                                snprintf(want, sizeof want, "%016llx", (unsigned long long)program_cache_stamp());
+                                fwrite(want, 1, 16, s), fclose(s);
+                            }
                             logf("vk: pipeline cache saved (%zu KB)", n >> 10);
                         }
                     }

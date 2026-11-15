@@ -30,6 +30,38 @@ static class Saves
 
     public static string TriforceFolder(string game) => Path.Combine(game, "user", "save", TriforceUid);
 
+    /// Triforce commits its save as a transaction (host/save_tx.h): the game's save mount is a working copy in
+    /// <user>\save-tx\<uid>\work, and a finished commit that could not be put in place yet (ready-<n>, the highest n) waits beside
+    /// it and is newer than the save folder. The folder of that transaction for a save folder <user>\save\<uid>, or null when
+    /// the folder is not such a save folder
+    static string? TriforceTx(string save)
+    {
+        var parent = Path.GetDirectoryName(save.TrimEnd('\\'));
+        if (parent == null || !string.Equals(Path.GetFileName(parent), "save", StringComparison.OrdinalIgnoreCase)) return null;
+        var user = Path.GetDirectoryName(parent);
+        return user == null ? null : Path.Combine(user, "save-tx", Path.GetFileName(save.TrimEnd('\\')));
+    }
+
+    /// The save Triforce would load at its next start: a finished commit still waiting, else the save folder
+    public static string TriforceNewest(string game)
+    {
+        var folder = TriforceFolder(game);
+        try
+        {
+            var tx = TriforceTx(folder);
+            if (tx != null && Directory.Exists(tx))
+            {
+                var ready = Directory.GetDirectories(tx, "ready-*")
+                    .Select(d => (Dir: d, M: Regex.Match(Path.GetFileName(d), @"^ready-(\d{1,9})$")))
+                    .Where(r => r.M.Success && IsSaveSet(r.Dir))
+                    .OrderByDescending(r => int.Parse(r.M.Groups[1].Value)).FirstOrDefault();
+                if (ready.Dir != null) return ready.Dir;
+            }
+        }
+        catch (Exception) { }
+        return folder;
+    }
+
     /// A folder holding this game's saves
     public static bool IsSaveSet(string dir) =>
         Directory.Exists(dir) && (File.Exists(Path.Combine(dir, "option.sav")) || File.Exists(Path.Combine(dir, "slot_00", "progress.sav"))
@@ -266,6 +298,12 @@ static class Saves
         }
         Directory.CreateDirectory(dst);
         CopyTree(src, dst);
+        // (into Triforce: its working copy and any finished commit still waiting belong to the save that was replaced, and the game
+        // would put such a commit over the copy at its next start)
+        if (TriforceTx(dst) is { } tx && Directory.Exists(tx))
+        {
+            try { Directory.Delete(tx, true); } catch (Exception) { }
+        }
         return backup;
     }
 

@@ -91,6 +91,8 @@ std::atomic<int64_t> st_cache_hits{0};
 // is the cache's own, so the counts below are of what the loader made)
 const std::vector<uint32_t>* renodx_replacement(uint32_t) { return nullptr; }
 #define PROF_EXACT()   // (vk_prof.h's exact-timing scope, since #989: nothing to time here)
+// (local, texture detail: vk_shader.cpp's note of which bindings a module reads by exact texel. Nothing to note here)
+void exact_note(VkShaderModule, const std::vector<uint32_t>&) {}
 #include "cache_functions.inc"
 
 void save(uint64_t key, bool empty_second = false, int bad_answer = 0) {

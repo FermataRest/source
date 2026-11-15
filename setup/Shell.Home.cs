@@ -83,7 +83,7 @@ sealed partial class Shell
             var none = offline.Message.Contains("no Triforce release");
             NewsMark.Fill = Brush("TextFaint");
             NewsLine.Text = none ? "No release is published yet" : "Couldn't check for updates";
-            NewsDetail.Text = (none ? "" : "GitHub could not be reached. ") + (hasGame ? "You can play what you have." : "You can build with the tools you have.");
+            NewsDetail.Text = (none ? "" : "The Triforce site could not be reached. ") + (hasGame ? "You can play what you have." : "You can build with the tools you have.");
             NewsDetail.Foreground = Brush("TextDim");
         }
         else if (update)

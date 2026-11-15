@@ -31,6 +31,7 @@ constexpr int MAX_PATH = 260;
 DWORD hos_game_path_a(char *path, int size) { return snprintf(path, size, "./hookshot.exe"); }
 void hos_log(const char *, ...) {}
 volatile uint64_t hos_wide_out = 0;   // (host/hos_main.c: the widescreen picture, 0 = none; nn_applet.c reads it)
+int hos_scene_rgba16f(void) { return 0; }   // (host/nn_vi.c: the scene's colour target, the game's own here; tests/test_rt_pool_minimum.py has the RGBA16F cases)
 struct { int handheld, output_res; } opts;
 namespace mkwvk {
 int up_now = 0;   // (the Upscaler shown: 0 the game's own, 1 DLSS, 2 DLAA)
@@ -98,7 +99,7 @@ int main(int argc, char **argv) {
         source.write_text(fixture, encoding="utf-8")
         subprocess.run([args.cxx, "-std=c++17", "-I", str(ROOT), str(source), "-o", str(exe)], check=True)
         for saved, handheld, override, mode, w, h, label in cases:
-            (work / "hookshot_options.ini").write_text(f"output_res={saved}\nhandheld_profile={handheld}\n", encoding="ascii")
+            (work / "triforce_options.ini").write_text(f"output_res={saved}\nhandheld_profile={handheld}\n", encoding="ascii")
             env = os.environ.copy()
             for key in ("HOS_OUTPUT_RES", "HOS_HANDHELD", "HOS_RT_POOL_MB"):
                 env.pop(key, None)

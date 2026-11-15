@@ -21,7 +21,16 @@ void hos_commit(uint64_t addr, uint64_t size) {
         hos_log("mem: commit of %#llx bytes at %#llx: outside the guest window", (unsigned long long)size, (unsigned long long)addr);
         return;
     }
-    const uint64_t lo = addr & ~0xFFFFULL, hi = (addr + size + 0xFFFF) & ~0xFFFFULL;
+    uint64_t lo = addr & ~0xFFFFULL, hi = (addr + size + 0xFFFF) & ~0xFFFFULL;
+    {   /* (HOS_LARGE_PAGES: the heap's large pages are a reservation of their own, committed whole; what lies below or
+           above them is committed by itself) */
+        extern uint64_t hos_large_lo, hos_large_hi;
+        if (hos_large_hi && lo < hos_large_hi && hi > hos_large_lo) {
+            if (lo < hos_large_lo) hos_commit(lo, hos_large_lo - lo);
+            if (hi <= hos_large_hi) return;
+            lo = hos_large_hi;
+        }
+    }
     if (!VirtualAlloc(GP(lo), (SIZE_T)(hi - lo), MEM_COMMIT, PAGE_READWRITE)) {
         const DWORD err = GetLastError();
         hos_log("mem: commit of %#llx bytes at %#llx failed (error %lu)", (unsigned long long)(hi - lo),

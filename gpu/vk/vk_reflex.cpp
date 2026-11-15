@@ -24,6 +24,7 @@
 #include <cstring>
 #include <mutex>
 
+#include "vk_dlssg.h"
 #include "vk_framegen.h"
 #include "vk_menu.h"
 #include "vk_work.h"   // (last: RX_VK_RECORDER=defer drains before the latency-sleep wait; =thread does not need to, the driver signals it)
@@ -59,6 +60,8 @@ Reflex& rx() {
 
 int wanted_mode() {
     static const char* e = getenv("RX_VK_REFLEX");
+    // (Triforce: with NVIDIA DLSS frame generation Reflex is Streamline's, vk_dlssg.cpp: this one stays off)
+    if (dlssg::early()) return 0;
     return std::clamp(e && *e ? atoi(e) : opts.reflex, 0, 2);
 }
 

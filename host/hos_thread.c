@@ -1188,6 +1188,16 @@ int hos_vcores_on(void) {
 static int vc_cores(void) { return hos_cores() > 8 ? 8 : hos_cores(); }
 static unsigned vc_allowed(HosThread *t) {
     const unsigned all = (1u << vc_cores()) - 1;
+    /* (Triforce, 11-14, the lab) HOS_VCORE_ANY=1: a thread takes any free core, not only the ones its affinity mask names.
+       What the game needs of the cores is that no two threads run under one core number at a time (its per-core data has no
+       locks); the masks are the console's placement. OoT pins nearly every thread to one core (six BaseProc executors, five
+       module workers, the main and Presentation threads on six cores), and here a thread waits for ITS core while others
+       stand free: at the Market ~61 waits a frame of ~0.1 ms each, 7 ms of waiting a frame summed over the threads, on the
+       path the frame now waits for (the game's own CPU work, 13-14 ms a frame with the replay on its own thread). The risk:
+       a thread that reads its core number, blocks, and goes on under another */
+    static int any = -1;
+    if (any < 0) any = getenv("HOS_VCORE_ANY") && atoi(getenv("HOS_VCORE_ANY")) != 0;
+    if (any) return all;
     unsigned m = (unsigned)(t->core_mask & all);
     if (!m) m = 1u << hos_thread_core(t);
     return m;

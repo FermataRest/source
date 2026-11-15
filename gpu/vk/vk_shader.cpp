@@ -95,6 +95,8 @@ void ptr_diag_log(uint64_t key, const char* kind) {
 }
 } // namespace
 #include "vk_shader.h"
+#include "spv_exact.h"
+#include "vk_texture.h"
 
 namespace mkwvk {
 namespace {
@@ -653,6 +655,19 @@ uint32_t spirv_crc32(const std::vector<uint32_t>& spirv) {
 }
 
 /// (local, RenoDX port) *renodx: set when RenoDX has a replacement for this module, which is made in its place (vk_renodx.h)
+// (Triforce, texture detail: the texture bindings each module reads by texel position or asks the size of, spv_exact.h;
+// kept only where the card's detail level leaves levels out, and only for the modules that have such a binding)
+std::mutex exact_mu;
+std::atomic<uint64_t> exact_gen{1};   // (bumped when an entry changes: shader_reads_exact's per-thread answer)
+std::unordered_map<VkShaderModule, spv_exact::Bindings> exact_of;
+void exact_note(VkShaderModule m, const std::vector<uint32_t>& code) {
+    if (!m || texture_detail_level() <= 0) return;
+    const spv_exact::Bindings b = spv_exact::scan(code.data(), code.size());
+    std::lock_guard lk(exact_mu);
+    if (spv_exact::any(b)) exact_of[m] = b;
+    else if (!exact_of.erase(m)) return;   // (a handle used again; nothing kept and nothing there: no thread's answer changes)
+    exact_gen.fetch_add(1, std::memory_order_release);
+}
 VkShaderModule make_module(const std::vector<uint32_t>& spirv, uint32_t* renodx = nullptr, uint32_t* crc_out = nullptr) {
     const uint32_t crc = spirv_crc32(spirv);
     if (crc_out) *crc_out = crc;
@@ -682,13 +697,30 @@ VkShaderModule make_module(const std::vector<uint32_t>& spirv, uint32_t* renodx 
         salted[2] ^= salt;
         ci.pCode = salted.data();
         vkCreateShaderModule(dev.device, &ci, nullptr, &m);
+        exact_note(m, code);
         return m;
     }
     vkCreateShaderModule(dev.device, &ci, nullptr, &m);
+    exact_note(m, code);
     return m;
 }
 
 } // namespace
+
+bool shader_reads_exact(VkShaderModule module, uint32_t binding) {
+    // (the last module asked about, a thread: draws that follow each other mostly share their program)
+    static thread_local VkShaderModule last = VK_NULL_HANDLE;
+    static thread_local spv_exact::Bindings last_bits{};
+    static thread_local uint64_t last_gen = 0;
+    const uint64_t gen = exact_gen.load(std::memory_order_acquire);   // (a new module may have taken an old one's handle)
+    if (module != last || last_gen != gen) {
+        std::lock_guard lk(exact_mu);
+        const auto it = exact_of.find(module);
+        last_bits = it == exact_of.end() ? spv_exact::Bindings{} : it->second;
+        last = module, last_gen = gen;
+    }
+    return spv_exact::has(last_bits, binding);
+}
 
 /// A word of a stage's constant bank: c0 / c2 the driver's banks, c1 its own constants, c3.. its uniform buffers
 uint32_t stage_cbuf_word(const NvnState& s, const Stage& st, uint32_t index, uint32_t offset) {

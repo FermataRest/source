@@ -115,12 +115,16 @@ static int fps_max(void) {
     static int v = -1;
     if (v < 0) {
         /* (the Insert menu's Frame rate cap, frame_rate_cap=: 0 the console's 60, then 90, 120, 144, 165, 240; HOS_FPS_MAX over it) */
-        static const int caps[] = {60, 90, 120, 144, 165, 240};
+        /* (Triforce, after NX2navi's limits under 60: -1 45, -2 40, -3 30, for a PC or a handheld's display that holds one
+           of them steadily where 60 swings. The pacing follows the cap and the game's time step is real time (realtime_step),
+           as when a PC cannot hold 60: the game keeps its speed) */
+        static const int caps[] = {60, 90, 120, 144, 165, 240}, low[] = {45, 40, 30};
         const int i = hos_ini_option("frame_rate_cap", 0);
         const char *e = getenv("HOS_FPS_MAX");
-        const int want = e ? atoi(e) : caps[i >= 0 && i < 6 ? i : 0];
-        v = want > 60 ? (want > 240 ? 240 : want) : 60;
+        const int want = e ? atoi(e) : i >= 0 && i < 6 ? caps[i] : i < 0 && i >= -3 ? low[-i - 1] : 60;
+        v = want > 60 ? (want > 240 ? 240 : want) : want >= 20 && want < 60 ? want : 60;
         if (v > 60) hos_log("vi: frame rate cap %d: pacing, the game's limiter and its time step follow it", v);
+        if (v < 60) hos_log("vi: frame rate cap %d: pacing follows it, the game keeps real time", v);
     }
     return v;
 }
@@ -137,7 +141,8 @@ int hos_vi_native_interval(Ctx *c, int requested) {
     if (game_interval < 0) game_interval = getenv("HOS_GAME_INTERVAL") && atoi(getenv("HOS_GAME_INTERVAL")) != 0;
     int rx_option(int id, int otherwise);
     const int clamped = requested < 1 ? 1 : requested > 4 ? 4 : requested;
-    present_interval = game_interval || !rx_option(0, 1) ? clamped : 1;
+    /* (a cap under 60 paces by itself: with the game's 2 vsyncs on top a cap of 30 would show 15) */
+    present_interval = (game_interval || !rx_option(0, 1)) && fps_max() >= 60 ? clamped : 1;
     return requested;
 }
 /* (hookshot) The window's textures as the console's display queue has them: each present is shown at its display
@@ -414,7 +419,8 @@ static void realtime_step(int64_t now) {
     }
     /* (the Insert menu's Game speed "per frame": a frame is a 60th of a second of game time. Not past 60 fps: the game would run
        faster than real time, so a cap above 60 keeps the real-time step whatever that row says) */
-    if (!rx_option(0, 1) && fps_max() <= 60) {
+    /* (nor under 60: a cap of 30 would be the game at half speed for good) */
+    if (!rx_option(0, 1) && fps_max() == 60) {
         int *slot = (int *)GP(mod + 0x2c8);
         if (*slot >= 15 && *slot <= 60) *slot = 60;
         return;
@@ -456,7 +462,7 @@ static void realtime_step(int64_t now) {
     const int top = timed ? 60 : fps_max();
     const double ratio = sum / count * 60.0;
     int *slot = (int *)GP(mod + 0x2c8);
-    if (*slot < 15 || *slot > fps_max()) {
+    if (*slot < 15 || *slot > (fps_max() > 60 ? fps_max() : 60)) {   /* (under a cap below 60 it starts at the game's 60) */
         static int logged;
         if (!logged++) hos_log("vi: the graphics module's frame rate reads %d: no real-time step", *slot);
         return;

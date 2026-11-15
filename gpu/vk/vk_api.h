@@ -26,10 +26,15 @@ enum { HOS_OPT_DLSS_JITTER_W = 24, HOS_OPT_DLSS_JITTER_H, HOS_OPT_DLSS_JITTER_PH
 /* (hookshot) the Insert menu's HDR set to Native (host/nn_vi.c QueryDisplayHdrStatus and QueryDisplayHdrPaperWhite): whether
    the game is told its display is HDR10 (the swapchain is one), and the peak and paper white it is told, in nits */
 /* (HOS_OPT_DISCORD, 43: the Insert menu's Discord status row, host/discord_rpc.c: 1 on) */
-enum { HOS_OPT_HDR_NATIVE = 40, HOS_OPT_HDR_PEAK, HOS_OPT_HDR_WHITE, HOS_OPT_DISCORD };
+/* (HOS_OPT_SPRINT, 45, and HOS_OPT_SPRINT_HOLD, 46: the Sprint button row (0 off, 1 the left stick's click, 2 B) and
+   the Sprint mode row (0 toggle, 1 hold), host/oot_sprint.c) */
+/* (HOS_OPT_VOLUME, 44: the Insert menu's Master volume row, host/nn_audio.c: percent of the game's own, 0 to 100) */
+enum { HOS_OPT_HDR_NATIVE = 40, HOS_OPT_HDR_PEAK, HOS_OPT_HDR_WHITE, HOS_OPT_DISCORD, HOS_OPT_VOLUME, HOS_OPT_SPRINT, HOS_OPT_SPRINT_HOLD };
 /* (Triforce) option_set only, each frame the game's own Options screen runs (host/oot_menu.c): the menu then draws its tabs
    over that screen's header, the game's own list the first of them (gpu/vk/vk_menu.cpp game_options_shown) */
-enum { HOS_OPT_GAME_OPTIONS = 48 };
+/* (Triforce) HOS_OPT_EXITING, option_set only: the process is about to exit (host/hos_relaunch.c): what must be shut
+   down in order before the DLLs are unloaded is (NVIDIA's Streamline, gpu/vk/vk_dlssg.cpp) */
+enum { HOS_OPT_GAME_OPTIONS = 48, HOS_OPT_EXITING };
 
 /* (hookshot) the controls' names (host/nn_hid.c, host/pad_sdl.c, the pad_ and key_ lines of triforce_options.ini):
    the Switch's buttons in nn::hid's bit order, and a gamepad's inputs by position, SDL's order (the bottom face

@@ -83,14 +83,17 @@ extern const uint64_t hos_entry_init_libc0, hos_entry_init_libc1, hos_entry_init
 /* nn_fs.c */
 extern const char *hos_romfs_dir, *hos_user_dir;
 
-/* HOS_LARGE_PAGES=1 (experiment): the guest window in 2 MB pages, for fewer TLB misses (the game touches hundreds of MB
-   of scattered heap; 4 KB pages cover only ~12 MB of it in the CPU's TLB). The whole window is then physical memory at
-   once (4 GB, locked), and Windows needs the account to hold "Lock pages in memory" (SeLockMemoryPrivilege, Local
-   Security Policy > User Rights Assignment; log off and on after): without it this logs why and uses normal pages. */
-int hos_large_pages;   /* (hos_mem.c: freed pages are not discarded then) */
+/* HOS_LARGE_PAGES=1 or =<MB> (experiment): the game's heap in 2 MB pages, for fewer TLB misses (the game's threads spend
+   their time on loads from a heap of 6.9 GB; 4 KB pages cover 8 MB of it in the CPU's second-level TLB, 2 MB pages 4 GB).
+   (triforce: the heap alone, from HOS_HEAP_BASE up: the window is 512 GB here and large pages are physical memory at once.
+   OoT asks for 6,894 MB; =1 takes 6,912.) That much is then physical memory from the start, locked, and Windows needs the
+   account to hold "Lock pages in memory" (SeLockMemoryPrivilege; log off and on after it is granted): without it, or
+   when Windows cannot find the memory in one piece, this logs why and uses normal pages. */
+int hos_large_pages;   /* (hos_mem.c: freed pages are not discarded there) */
+uint64_t hos_large_lo, hos_large_hi;   /* (the guest range in large pages: mkw_glue.c hos_commit, hos_mem.c) */
 #if defined(_WIN32) && !defined(A64_MEM_ZERO)
 #pragma comment(lib, "advapi32.lib")   /* (the token privilege calls) */
-static void *reserve_large(SIZE_T size) {
+static void *reserve_large(void *at, SIZE_T size) {
     HANDLE token;
     if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &token)) return NULL;
     TOKEN_PRIVILEGES tp = {0};
@@ -107,7 +110,7 @@ static void *reserve_large(SIZE_T size) {
     }
     const SIZE_T large = GetLargePageMinimum();
     if (!large || size % large) return NULL;
-    void *p = VirtualAlloc((void *)A64_HOST_BASE, size, MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES, PAGE_READWRITE);
+    void *p = VirtualAlloc(at, size, MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES, PAGE_READWRITE);
     if (!p) hos_log("mem: HOS_LARGE_PAGES: %llu MB of large pages not available (error %lu): normal pages",
                     (unsigned long long)(size >> 20), GetLastError());
     return p;
@@ -127,10 +130,26 @@ static int reserve_guest(void) {
        pages changed (GetWriteWatch) so that it uploads only those (soft write watch builds mark pages themselves). */
 #if defined(A64_WRITE_TRACK)
     const DWORD watch = 0;
-    if (getenv("HOS_LARGE_PAGES") && reserve_large(GUEST_SPACE) == (void *)A64_HOST_BASE) {
-        hos_large_pages = 1;
-        hos_log("mem: the guest window is in large pages (%llu MB)", (unsigned long long)(GUEST_SPACE >> 20));
-        return 1;
+    if (getenv("HOS_LARGE_PAGES")) {
+        /* three reservations: below the heap, the heap's large pages, above them (a commit never spans two: hos_commit) */
+        uint64_t mb = strtoull(getenv("HOS_LARGE_PAGES"), NULL, 10);
+        if (mb < 64) mb = 6912;
+        const uint64_t n = ((mb << 20) + 0x1FFFFFULL) & ~0x1FFFFFULL;
+        uint8_t *const base = (uint8_t *)A64_HOST_BASE;
+        const ULONGLONG t0 = GetTickCount64();
+        if (HOS_HEAP_BASE + n < GUEST_SPACE && VirtualAlloc(base, HOS_HEAP_BASE, MEM_RESERVE, PAGE_NOACCESS) == base) {
+            if (reserve_large(base + HOS_HEAP_BASE, (SIZE_T)n) == base + HOS_HEAP_BASE &&
+                VirtualAlloc(base + HOS_HEAP_BASE + n, GUEST_SPACE - HOS_HEAP_BASE - n, MEM_RESERVE, PAGE_NOACCESS)) {
+                void hos_commit_init(void);
+                hos_commit_init();
+                hos_large_lo = HOS_HEAP_BASE, hos_large_hi = HOS_HEAP_BASE + n, hos_large_pages = 1;
+                hos_log("mem: the game's heap is in large pages (%llu MB at %#llx, made in %llu ms)", (unsigned long long)(n >> 20),
+                        (unsigned long long)HOS_HEAP_BASE, (unsigned long long)(GetTickCount64() - t0));
+                return 1;
+            }
+            VirtualFree(base + HOS_HEAP_BASE, 0, MEM_RELEASE);
+            VirtualFree(base, 0, MEM_RELEASE);
+        }
     }
 #else
     const DWORD watch = MEM_WRITE_WATCH;

@@ -69,6 +69,21 @@ int hos_gpu_guest_ranges(uint64_t (*out)[2], int max);
 /* The soft write watch's marks (rt/a64.h A64_MARK, hos_mark_written) over the GPU-visible ranges, read and cleared:
    the Vulkan back end's own collection (gpu/render's rx_collect_written works only with the WebGPU renderer started).
    One consumer: with Vulkan the WebGPU renderer never runs. */
+#ifdef A64_MARK_ONE
+/* A64_MARK_ONE (build.py RX_MARK_ONE=1): lifted code marks the page of a store's first byte alone, so a mark says "this
+   page and the next may have been written" (a store is at most 4 KB long: rt/a64.h, the lift's mark groups). */
+static int page_collected(uint64_t page) {   /* is the page in a range some collection reads (and so clears its mark)? */
+    static uint64_t (*all)[2];
+    static SRWLOCK mu = SRWLOCK_INIT;
+    int in = 0;
+    AcquireSRWLockExclusive(&mu);
+    if (!all) all = malloc(sizeof *all * 4096);
+    const int n = hos_gpu_guest_ranges(all, 4096);
+    for (int i = 0; i < n && !in; i++) in = page >= all[i][0] >> 12 && page < (all[i][1] + 4095) >> 12;
+    ReleaseSRWLockExclusive(&mu);
+    return in;
+}
+#endif
 static int64_t collect_in(const uint64_t (*ranges)[2], int nranges, uint32_t **pages) {
     size_t n = 0, cap = 4096;
     uint32_t *out = malloc(cap * sizeof *out);
@@ -76,6 +91,46 @@ static int64_t collect_in(const uint64_t (*ranges)[2], int nranges, uint32_t **p
         const uint64_t lo = ranges[r][0], hi = ranges[r][1] < hos_guest_size() ? ranges[r][1] : hos_guest_size();
         uint64_t p1 = (hi + 4095) >> 12;
         if (p1 > A64_DIRTY_PAGES) p1 = A64_DIRTY_PAGES;
+#ifdef A64_MARK_ONE
+        /* carry: the page before was marked, so this one may be written too. Into the range's first page from the page
+           before it: that mark is another collection's to clear, or nobody's (then it is cleared here: it would say so at
+           every collection). Out of the range's last page: marked on for whoever collects the page after. */
+        uint64_t p = lo >> 12;
+        int carry = 0;
+        if (p > 0 && p <= p1 && __atomic_load_n(&a64_dirty[p - 1], __ATOMIC_RELAXED)) {
+            carry = 1;
+            if (!page_collected(p - 1)) __atomic_exchange_n(&a64_dirty[p - 1], 0, __ATOMIC_ACQUIRE);
+        }
+        while (p < p1) {
+            if (!carry) {
+                if (!(p & 31) && p + 32 <= p1) {   /* (32 pages at a time while none is marked) */
+                    uint64_t w[4];
+                    memcpy(w, &a64_dirty[p], 32);
+                    if (!(w[0] | w[1] | w[2] | w[3])) {
+                        p += 32;
+                        continue;
+                    }
+                }
+                if (!(p & 7) && p + 8 <= p1) {   /* (eight pages a load while none is marked) */
+                    uint64_t w;
+                    memcpy(&w, &a64_dirty[p], 8);
+                    if (!w) {
+                        p += 8;
+                        continue;
+                    }
+                }
+            }
+            const int marked = __atomic_load_n(&a64_dirty[p], __ATOMIC_RELAXED) && __atomic_exchange_n(&a64_dirty[p], 0, __ATOMIC_ACQUIRE);
+            if (marked || carry) {
+                if (n == cap) out = realloc(out, (cap *= 2) * sizeof *out);
+                out[n++] = (uint32_t)p;
+            }
+            carry = marked;
+            p++;
+        }
+        if (carry && p1 < A64_DIRTY_PAGES) __atomic_store_n(&a64_dirty[p1], 1, __ATOMIC_RELEASE);
+        continue;
+#endif
         for (uint64_t p = lo >> 12; p < p1;) {
             if (!(p & 31) && p + 32 <= p1) {   /* (32 pages at a time while none is marked) */
                 uint64_t w[4];
@@ -430,7 +485,14 @@ void rx_nvn_write_texels(const nvn_tex *t, unsigned level, unsigned layer0, cons
 void rx_nvn_invalidate(uint64_t gpu, uint64_t size) {
     /* The callback can wait for replay or GPU write-back: let another guest thread use this core meanwhile. */
     const int away = hos_vcore_away();
+    int hos_ft_on(void);
+    double hos_ft_ms(void);
+    const int ft = hos_ft_on();   /* (Triforce, 11-14: a readback that waited 0.2 ms or more, nvn_native.c HOS_FT) */
+    const int64_t t0 = ft ? hos_now_ns() : 0;
     vk ? vk->nvn_invalidate(gpu, size) : wgr_nvn_invalidate(gpu, size);
+    if (ft && hos_now_ns() - t0 >= 200000)
+        hos_log("ft %.3f readback %#llx +%#llx waited %.2f ms", hos_ft_ms(), (unsigned long long)gpu, (unsigned long long)size,
+                (hos_now_ns() - t0) / 1e6);
     if (away) hos_vcore_back();
 }
 int rx_guest_imported(uint64_t lo, uint64_t hi) {

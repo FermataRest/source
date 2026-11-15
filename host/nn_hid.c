@@ -245,6 +245,11 @@ static int mouse_stick(int32_t *rx, int32_t *ry, int pointing) {
            read after a pause starts afresh) */
         const int64_t ticks = next_tick ? (now - next_tick) / MOUSE_TICK_NS + 1 : 1;
         double ox = look_x, oy = look_y;
+        if (!pointing) {   /* (Triforce: the Camera speed row is the stick's; the game multiplies this deflection by it too) */
+            double hos_camera_speed(void);   /* (host/prompts.c) */
+            const double cam = hos_camera_speed();
+            ox /= cam, oy /= cam;
+        }
         const double shown_length = sqrt(ox * ox + oy * oy);
         if (shown_length > 1) ox /= shown_length, oy /= shown_length;
         shown[0] = (int32_t)lround(ox * 32767);
@@ -944,6 +949,10 @@ static void npad_states(Ctx *c) {
     }
     if (connected) {
         read_input(&buttons, stick);
+        {   /* (Triforce) the sprint button's press is its own while Link plays (host/oot_sprint.c) */
+            void hos_oot_sprint_pad(uint64_t *buttons);
+            hos_oot_sprint_pad(&buttons);
+        }
         uint64_t axes = 0;
         uint64_t flight = 0;
         int height = 0;

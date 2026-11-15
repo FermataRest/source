@@ -241,8 +241,11 @@ sealed partial class Shell
         {
             if (DlssTick.IsChecked != true) { Install.Set("Dlss", "0"); return; }
             DlssTick.IsChecked = false;
-            Ask("NVIDIA DLSS is NVIDIA's, under NVIDIA's own license (github.com/NVIDIA/DLSS, LICENSE.txt). Its files are downloaded to " +
-                "this PC; a game folder built with them must not be shared. Do you accept NVIDIA's license?", "I accept", T(S.Back),
+            // (11-15: the tick brings DLSS frame generation too: NVIDIA's Streamline (MIT) and nvngx_dlssg.dll, under the NVIDIA RTX
+            // SDKs License as DLSS itself: nx2/make_game.py fetch_streamline_sdk, scripts/streamline_sdk.py)
+            Ask("NVIDIA DLSS and DLSS frame generation are NVIDIA's, under NVIDIA's own licenses (github.com/NVIDIA/DLSS, LICENSE.txt; " +
+                "github.com/NVIDIA-RTX/Streamline, license.txt). Their files are downloaded to this PC; a game folder built with them " +
+                "must not be shared. Do you accept NVIDIA's licenses?", "I accept", T(S.Back),
                 () => { DlssTick.IsChecked = true; Install.Set("Dlss", "1"); });
         };
         SetupBack.Click += (_, _) => ShowHome(homeOffline);
@@ -447,7 +450,7 @@ sealed partial class Shell
         FetchUnknown(false);
         FetchCancel.IsEnabled = true;
         var offline = e is HttpRequestException || e is TaskCanceledException && !cancelled;
-        FetchTitle.Text = cancelled ? "Stopped" : offline ? "GitHub could not be reached" : "Something went wrong";
+        FetchTitle.Text = cancelled ? "Stopped" : offline ? "The Triforce site could not be reached" : "Something went wrong";
         FetchNote.Text = cancelled ? "Nothing was changed." : offline ? "Check your internet connection, then try again." : e.Message;
         FetchNote.Foreground = Brush(cancelled ? "Text" : "Bad");
         FetchStep.Text = "";
@@ -793,6 +796,10 @@ sealed partial class Shell
         // (NVIDIA DLSS chosen: its SDK fetched first, only what is missing, and built in; a build and an update alike)
         var dlss = DlssChosen;
         if (dlss && !args.Contains("--fetch-ngx-sdk")) args.AddRange(new[] { "--fetch-ngx-sdk", "--accept-nvidia-license" });
+        // (11-15: AMD FSR 4 in every build: its code is built in and AMD's two signed libraries (MIT license) are fetched
+        // from AMD's repository and put beside the game: nx2/make_game.py --fsr, scripts/fsr_sdk.py. The Upscaler row offers
+        // it only on a card AMD's library says runs it)
+        if (!args.Contains("--fsr") && !args.Contains("--no-fsr")) args.Add("--fsr");
         Program.Log("build: make_game.py " + string.Join(" ", args) + " (tools " + tools.Root + ")");
         runner = new Runner(tools, args, dlss ? NgxSdk : null);
         ShowClock();

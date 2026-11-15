@@ -9,6 +9,7 @@
      Windows: a new process of this executable (GetModuleFileNameW) with this one's command line (GetCommandLineW), in
      the same folder and environment; then this one exits. */
 #include "hos.h"
+#include "../gpu/vk/vk_api.h"   /* (HOS_OPT_EXITING) */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -90,6 +91,10 @@ void hos_window_closed_exit(void) {
     const int again = relaunch_asked != 0;
     hos_log(again ? "display: window closed for a restart (the Insert menu's Restart now)" : "display: window closed, exiting");
     hos_log_flush();
+    { void hos_fs_save_finish(void); hos_fs_save_finish(); }   /* (host/nn_fs.c: a save still being committed is finished first) */
+    /* (Triforce) the renderer is told: NVIDIA's Streamline is shut down in order, where leaving it to the DLLs' unloading
+       crashed inside nvngx_dlssg.dll at every exit with DLSS frame generation on */
+    { void rx_option_set(int id, int value); rx_option_set(HOS_OPT_EXITING, 1); }
     if (again) relaunch();
     ExitProcess(0);
 }

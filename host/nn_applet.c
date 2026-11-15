@@ -137,7 +137,12 @@ uint32_t hos_output_size(int height) {
    Castle Town's guard-house conversation/camera test crashed with 305 MB at 2560 x 1440 and passed with 512 MB.
    Keep at least 512 MB by default; larger scaled pools and an explicit HOS_RT_POOL_MB=<MB> still win. The 5120 x 2880 output's
    pool is kept to 900 MB: scaled, it is 1220 MB, and 1220 and 1000 MB both failed the game's own reservation at boot; at 900
-   MB it boots and plays with the 3D at the full 5120 x 2880. Every other output keeps its whole scaled pool. */
+   MB it boots and plays with the 3D at the full 5120 x 2880. Every other output keeps its whole scaled pool.
+   That 900 MB is the most for the whole pool there, the RGBA16F scene's 128 MB counted in: the 5120 x 2880 output with RenoDX
+   HDR asked 900 + 128 = 1028 MB, and the game stopped at boot in f_83b7b340, where the "Graphics" heap is made larger by as
+   much as the pool (nx2/oot_patches.py): a null pointer (a player's log, v0.3.7). With the 900 MB, 11-15 on an RTX 4070 SUPER: that
+   output with RenoDX HDR boots and played in the world, 17,160 presents at about 50 fps, RenoDX's four shaders in place, no
+   error from the pool (one short session, not every area; its scene target and each copy are 118 MB there). */
 uint64_t hos_rt_pool_size(uint64_t game) {
     const char *e = getenv("HOS_RT_POOL_MB");
     extern volatile uint64_t hos_wide_out;
@@ -150,9 +155,16 @@ uint64_t hos_rt_pool_size(uint64_t game) {
     extern int hos_scene_rgba16f(void);
     /* (local, RenoDX port) the scene's colour target at 8 bytes a pixel in place of 4: room for it and its copies, at 3840 x 2160 33 MB each */
     const uint64_t rgba16f = hos_scene_rgba16f() ? 128ULL << 20 : 0;
-    const uint64_t v = (e ? strtoull(e, NULL, 0) << 20 : scaled < minimum ? minimum : is_five_k && scaled > five_k ? five_k : scaled) + (e ? 0 : rgba16f);
+    const uint64_t asked = (e ? strtoull(e, NULL, 0) << 20 : scaled < minimum ? minimum : is_five_k && scaled > five_k ? five_k : scaled) + (e ? 0 : rgba16f);
+    /* (the 5120 x 2880 output: 900 MB for the whole pool, see above; an explicit HOS_RT_POOL_MB still wins) */
+    const uint64_t v = !e && is_five_k && asked > five_k ? five_k : asked;
     static int logged;
-    if (!logged++) hos_log("applet: render target pool %llu MB (the game's %llu MB)", (unsigned long long)(v >> 20), (unsigned long long)(game >> 20));
+    if (!logged++) {
+        hos_log("applet: render target pool %llu MB (the game's %llu MB)", (unsigned long long)(v >> 20), (unsigned long long)(game >> 20));
+        if (v != asked)
+            hos_log("applet: render target pool: %llu MB asked (the 5120x2880 output with an RGBA16F scene), kept to %llu MB: more fails the game's reservation at boot",
+                    (unsigned long long)(asked >> 20), (unsigned long long)(v >> 20));
+    }
     return v;
 }
 HLE(_ZN2nn2oe16GetOperationModeEv) { RET(handheld() ? 0 : 1); }     /* OperationMode_Handheld / _Console (docked) */

@@ -49,6 +49,23 @@ SHADERS = [
     (0xD08E7AD8, "scene_mapping_hdr_0x09EB4538.frag.slang", 2, "the scene's tone mapping, native HDR, with local exposure"),
     (0xCCB24C45, "fov_capture_0x0258153C.frag.slang", 1, "the fog, which records the camera's field of view"),
 ]
+# (Triforce, 11-14) The same four game shaders under the other checksums they have. The four above are what a translator
+# built with Microsoft's C++ library makes (the lab's builds); a translator built with libc++ (llvm-mingw: EVERY Setup build,
+# and the build the patch's author matched on) gives the same programs other bytes, and v0.3.6 shipped with the lab's four
+# alone: RenoDX replaced nothing in any player's game, the wide scene format on and the game's own tone mapping drawn (a
+# player's log of 11-14: "none of its four shaders has replaced"; a copy of his Setup-built folder run in the lab with
+# RX_VK_RENODX_TRACE=1: the frame's last draw is module C749AC23, the patch's encoder). Each entry here names one of the four
+# above and is the same replacement under another name. Found by what the modules are, not their bytes (the lab's
+# perf\night\spvsig.py: opcode counts, constants, decorations; the two builds' modules differ only in how ids are numbered,
+# 41 of the encoder's 1,327 words): of the 24,350 modules a Setup build of v0.3.6 made, exactly one has each of the four's
+# signature. C749AC23 and D2EDEE38 are also the patch's; its other two (0D00542E, 9E0C0C3A: v0.3.3's translator) are made by
+# neither build any more. A change to the emitter changes all eight: match again the same way
+ALSO = {
+    0x4AE77AB6: (0xC749AC23,),
+    0x66644A1B: (0xD2EDEE38,),
+    0xD08E7AD8: (0xCC713D29,),
+    0xCCB24C45: (0x93C92C19,),
+}
 FLAGS = ["-stage", "fragment", "-O3", "-g0", "-entry", "main", "-Wno-30056", "-Wno-15205", "-Wno-30081", "-Wno-41035",
          "-DNDEBUG", "-target", "spirv"]
 
@@ -215,7 +232,7 @@ def fetch(folder, platform, opener=urllib.request.urlopen, say=print):
 def stamp():
     """What a compiled header is made from: the commit, the compiler, the shaders and their flags. In the header's first line,
     so one made from something else is made again"""
-    h = hashlib.sha256(repr((COMMIT, SLANG_VERSION, SHADERS, FLAGS, FILES)).encode())
+    h = hashlib.sha256(repr((COMMIT, SLANG_VERSION, SHADERS, FLAGS, FILES, sorted(ALSO.items()))).encode())
     return "// renodx_shaders.py %s" % h.hexdigest()[:16]
 
 
@@ -253,6 +270,9 @@ def compile_header(renodx, compiler, out_path, say=print, first_line=None):
     lines.append("static const struct { uint32_t crc; const uint32_t* words; uint32_t count; int kind; } RENODX_SHADERS[] = {")
     for crc, name, kind, what in SHADERS:
         lines.append("    {0x%08Xu, RENODX_%08X, sizeof RENODX_%08X / 4, %d}," % (crc, crc, crc, kind))
+    for crc, name, kind, what in SHADERS:   # (the same replacement under the game shader's other checksums: ALSO)
+        for other in ALSO.get(crc, ()):
+            lines.append("    {0x%08Xu, RENODX_%08X, sizeof RENODX_%08X / 4, %d}," % (other, crc, crc, kind))
     lines.append("};")
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     with open(out_path + ".part", "w", newline="\n", encoding="utf-8") as f:

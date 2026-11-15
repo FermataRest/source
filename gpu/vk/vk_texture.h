@@ -29,6 +29,8 @@ struct Texture {
     VkImageCreateFlags create_flags = 0;   // (hookshot: as its image was made, for the compaction's copy of it)
     uint32_t width = 1, height = 1, depth = 1, levels = 1, layers = 1;   // the image's (after skip)
     uint32_t skip = 0;        // top levels of the texture left out (huge textures: RX_VK_TEX_MAX_DIM, _MAX_MB)
+    bool detail_skip = false; // (Triforce) levels of it are left out by the card's texture detail (tex_detail.h)
+    bool whole_asked = false; // (and a shader reads it by texel position: it goes, and is made whole: texture_want_whole)
     // (a huge array kept whole as a sparse resident image instead: each layer gets device memory when it is first
     // written, so only what the game streams in costs VRAM. MKW's terrain arrays, 8192 x 8192 x 68 BC6H: 5.8 GB
     // each, written by the GPU's copies into level 0, which a texture with its top level left out lost)
@@ -150,6 +152,17 @@ int texture_segment_end(int index);
 uint32_t texture_epoch();
 /// Changes whenever a texture is destroyed (pointers to textures kept elsewhere go stale)
 uint64_t texture_destroy_generation();
+/// (Triforce) The texture detail in effect: 0 full, 1 reduced, 2 low (tex_detail.h; chosen at the first call, which needs
+/// the device and its allocator)
+int texture_detail_level();
+/// (Triforce) A shader reads the texture by texel position or asks for its size (spv_exact.h) and the texture detail left
+/// levels of it out: it is let go at the next sweep and made whole from then on. Any thread of the replay.
+void texture_want_whole(Texture* tex);
+/// One texture's own end, where the generation above is too wide (any texture's end changes it, and textures go in most
+/// frames while the video memory is full): how many textures were destroyed so far, and whether the one with this creation
+/// number (Texture::id) was, since a count taken while it was there. True too when it cannot be told (texture_gone.h)
+uint64_t texture_destroyed_count();
+bool texture_destroyed_since(uint32_t id, uint64_t since);
 /// The texture an NVN texture's storage is (made and uploaded at first use, uploaded again when the CPU wrote its
 /// storage since). null for formats and targets that have no image (buffers, unknown formats).
 Texture* texture_get(const nvn_tex* t, bool for_sampling);

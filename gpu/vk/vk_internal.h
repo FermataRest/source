@@ -180,7 +180,7 @@ void memory_stats(int64_t* mirrors, uint64_t* mirror_mb, int64_t* sync_bytes, in
 void memory_collect_written();
 /// RX_VK_CAPTURE (on with the mirrors; =0 off): at a submit, on the submitting thread, the pages the CPU wrote since the
 /// last one, and a copy of them as they are then; the replay stamps them and fills the mirrors from that copy
-void memory_capture_submit();
+bool memory_capture_submit();   // (true: a capture was queued for the replay to take)
 /// The replay of the next submit: its capture (false: none, the pages are collected now as before)
 bool memory_take_capture(uint64_t value, uint64_t completed);
 bool memory_capture_now(uint64_t value, uint64_t completed);   // (hookshot: made and taken at once)
@@ -319,6 +319,7 @@ bool prepare_is_update();
 void prepare_background();
 void state_list_run();                        // (an update: the state list's pipelines noted before precompile_run)
 void predict_background();   // (Triforce: the predicted pipelines predict_run did not get to, built behind the game)
+void frame_shown_note(int draws);   // (Triforce, 11-14: a frame was shown with this many draws; the builder rests in play)
 void predict_plan_ensure();  // (Triforce: its plan, made before the precompile when an older build prepared this install)
 void predict_run(void (*progress)(size_t done, size_t total));   // (after a prepare_run that prepared: the notes' predictions)
 /// (hookshot) The window was closed while the shaders were prepared: prepare_run and precompile_run take nothing more and return,
